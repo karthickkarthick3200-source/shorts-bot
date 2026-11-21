@@ -1,0 +1,62 @@
+name: shorts
+on:
+  schedule:
+    - cron: "0 1,5,9,13,17 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: shorts
+jobs:
+  make:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install -r requirements.txt
+      - name: Generate video
+        run: python generate.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          NICHE: ${{ vars.NICHE }}
+      - name: Temporary public URL
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ github.run_id }}"
+          gh release create "$TAG" out/final.mp4 --title "$TAG" --notes "temp"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/${{ github.repository }}/releases/download/$TAG/final.mp4" >> "$GITHUB_OUTPUT"
+      - name: Upload to YouTube
+        run: python upload_youtube.py
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      - name: Upload to Instagram
+        if: ${{ !cancelled() && steps.rel.outputs.url != '' }}
+        run: python upload_instagram.py
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          VIDEO_URL: ${{ steps.rel.outputs.url }}
+      - name: Remove temporary release
+        if: ${{ always() && steps.rel.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ steps.rel.outputs.tag }}" --cleanup-tag -y
+      - name: Save topic history
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add history.json || true
+          git diff --cached --quiet || (git commit -m "history" && git pull --rebase && git push)
