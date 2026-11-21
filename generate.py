@@ -7,7 +7,7 @@ HIST = pathlib.Path("history.json")
 MUSIC_DIR = pathlib.Path("music")
 NICHE = os.environ.get("NICHE") or "surprising science and history facts"
 VOICE = os.environ.get("VOICE", "en-US-AndrewMultilingualNeural")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
 used_videos = set()
 
