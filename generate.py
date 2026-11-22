@@ -19,8 +19,14 @@ POLL_URL = os.environ.get("POLLINATIONS_URL", "").strip() or "https://image.poll
 if not POLL_URL.endswith("/"):
     POLL_URL += "/"
 # Free AI pictures from Cloudflare Workers AI (FLUX.1 schnell): free account + API token, no card.
-CF_ACCOUNT = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
-CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+def clean_secret(name):
+    """First word of a GitHub secret: survives stray spaces, line breaks and a pasted 'Bearer' prefix."""
+    parts = [x for x in os.environ.get(name, "").split() if x.lower() not in ("bearer", "authorization:")]
+    return parts[0] if parts else ""
+
+
+CF_ACCOUNT = clean_secret("CLOUDFLARE_ACCOUNT_ID")
+CF_TOKEN = clean_secret("CLOUDFLARE_API_TOKEN")
 # One look for every picture. Change the IMAGE_STYLE variable in GitHub to change the whole channel's style.
 STYLE_SUFFIX = os.environ.get("IMAGE_STYLE", "").strip() or (
     "3D Pixar-style cartoon illustration, vibrant saturated colors, expressive characters, "
@@ -477,6 +483,7 @@ def add_music(video, final):
 
 def main():
     global CUR_STYLE, CHARACTER
+    print(f"generate.py v5 | cloudflare token length {len(CF_TOKEN)} (normally 40), account id length {len(CF_ACCOUNT)} (normally 32)")
     hist = json.loads(HIST.read_text()) if HIST.exists() else []
     data = plan(hist)
     CUR_STYLE = STYLES.get(str(data.get("style", "")).strip().lower(), STYLES["clean"])
