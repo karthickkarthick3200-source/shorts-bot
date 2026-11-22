@@ -1,4 +1,4 @@
-import asyncio, json, os, pathlib, random, re, subprocess, time, urllib.parse
+import asyncio, base64, json, os, pathlib, random, re, subprocess, time, urllib.parse
 import edge_tts, requests
 
 KIND = os.environ.get("KIND", "short").strip().lower()      # "short" (vertical) or "long" (landscape)
@@ -12,17 +12,46 @@ NICHE = os.environ.get("NICHE") or "surprising science and history facts"
 VOICE = os.environ.get("VOICE", "en-US-AndrewMultilingualNeural")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
+PIXABAY = os.environ.get("PIXABAY_API_KEY", "")
 # Optional: a free Pollinations key (sent as a Bearer token) and a custom endpoint if their docs change.
 POLL_KEY = os.environ.get("POLLINATIONS_KEY", "").strip()
 POLL_URL = os.environ.get("POLLINATIONS_URL", "").strip() or "https://image.pollinations.ai/prompt/"
 if not POLL_URL.endswith("/"):
     POLL_URL += "/"
+# Free AI pictures from Cloudflare Workers AI (FLUX.1 schnell): free account + API token, no card.
+CF_ACCOUNT = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+# One look for every picture. Change the IMAGE_STYLE variable in GitHub to change the whole channel's style.
+STYLE_SUFFIX = os.environ.get("IMAGE_STYLE", "").strip() or (
+    "3D Pixar-style cartoon illustration, vibrant saturated colors, expressive characters, "
+    "soft cinematic lighting, highly detailed, no text, no letters, no watermark")
+CHARACTER = ""        # recurring main character, written by the AI for each video so faces stay consistent
+cf_dead = False
+cf_fail = 0
 used_videos = set()
+used_pb = set()
 pollinations_dead = False   # set to True on 401/402/403 so we stop wasting time on retries
 
 
+# Caption looks. The AI picks one per video to match the topic. Fonts come from the system (see workflow apt step);
+# if a font is missing, the renderer quietly falls back to a default font.
+STYLES = {
+    "impact":   {"font": "Oswald",           "scale": 1.15, "bold": True, "color": "&H0000E6FF", "upper": True},
+    "clean":    {"font": "Open Sans",        "scale": 1.00, "bold": True, "color": "&H00FFFFFF", "upper": True},
+    "modern":   {"font": "Montserrat",       "scale": 0.90, "bold": True, "color": "&H00FFFFFF", "upper": True},
+    "friendly": {"font": "Comic Neue",       "scale": 1.10, "bold": True, "color": "&H0080F0FF", "upper": False},
+    "serif":    {"font": "Liberation Serif", "scale": 1.10, "bold": True, "color": "&H00E6F5FF", "upper": False},
+    "mono":     {"font": "DejaVu Sans Mono", "scale": 0.85, "bold": True, "color": "&H0080FF80", "upper": False},
+}
+CUR_STYLE = STYLES["clean"]
+POP = "{\\fscx85\\fscy85\\t(0,120,\\fscx105\\fscy105)\\t(120,220,\\fscx100\\fscy100)\\fad(40,0)}"
+
+
 def ass_header():
+    st = CUR_STYLE
     size, margin = (66, 110) if KIND == "long" else (92, 520)
+    size = int(size * st["scale"])
+    bold = -1 if st["bold"] else 0
     return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
@@ -30,7 +59,7 @@ PlayResY: {H}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,{size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,9,2,2,60,60,{margin},1
+Style: Default,{st['font']},{size},{st['color']},&H000000FF,&H00000000,&H64000000,{bold},0,0,0,100,100,0,0,1,9,2,2,60,60,{margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -43,13 +72,16 @@ def run(cmd):
 
 RULES_COMMON = """- Only state facts you are certain are true. No made-up statistics, no made-up tools, no made-up prices. Only name tools that really exist and are free. If you are not sure a tool exists, teach a general technique instead.
 - The title may ONLY promise what the video actually explains. Never use: secret, hack, hidden, shocking, they don't want you to know, or any claim about earning money, getting paid or getting rich.
-- Narration is plain spoken English, no emojis, no stage directions."""
+- Narration is plain spoken English, no emojis, no stage directions.
+- The first scene must confirm what the title promises in its first sentence and open a question the viewer wants answered. Good hook shapes: name a mistake the viewer is probably making right now; state common advice and then reject it; show the end result first, then say how. Never invent a number, a result or a source."""
 
 JSON_KEYS = """Return ONLY JSON with keys:
 title (max 70 chars, clear and honest, no clickbait),
 description (1-2 sentences, no income claims),
 hashtags (array of 5 strings, no #),
-scenes (array of {n} objects with: "narration", "search_query" (2-3 simple concrete English words describing real stock footage, e.g. "ocean waves", "city night"), "image_prompts" (array of exactly 2 vivid visual descriptions of two DIFFERENT views or moments for this scene, no text in the images))."""
+character (ONE sentence describing a friendly cartoon main character who appears in most scenes: age, hair, clothes, e.g. "a young Indian woman with a black ponytail wearing a yellow hoodie and round glasses"),
+style (exactly one of: impact, clean, modern, friendly, serif, mono. Pick the caption look that fits the topic mood: impact for urgent tips and news, clean for tutorials, modern for AI and tech, friendly for casual beginner topics, serif for history and stories, mono for coding),
+scenes (array of {n} objects with: "narration", "search_query" (2-3 simple concrete English words describing real stock footage, e.g. "ocean waves", "city night"), "image_prompts" (array of exactly 2 picture descriptions. Each must show exactly what that scene's narration is saying: a concrete subject, an action and a setting, featuring the main character whenever a person fits. The two must be DIFFERENT moments or camera angles. Never ask for text, letters, logos or screens with readable words in the pictures))."""
 
 
 def build_prompt(hist):
@@ -134,6 +166,41 @@ def pexels_clip(query, path):
     return False
 
 
+def pixabay_clip(query, path):
+    """Free stock footage from Pixabay (needs a free PIXABAY_API_KEY). Tries the full query, then its first word."""
+    if not PIXABAY or not query:
+        return False
+    words = query.split()
+    tries = [query] + ([words[0]] if len(words) > 1 else [])
+    order = ["large", "medium", "small"] if KIND == "long" else ["medium", "large", "small"]
+    for q in tries:
+        try:
+            r = requests.get("https://pixabay.com/api/videos/",
+                             params={"key": PIXABAY, "q": q, "per_page": 20, "safesearch": "true"}, timeout=30)
+            r.raise_for_status()
+            hits = [h for h in r.json().get("hits", []) if h["id"] not in used_pb and h.get("duration", 0) >= 3]
+            random.shuffle(hits)
+            for h in hits[:5]:
+                v = h.get("videos", {})
+                url = next((v[k]["url"] for k in order if v.get(k, {}).get("url")), None)
+                if not url:
+                    continue
+                d = requests.get(url, timeout=180); d.raise_for_status()
+                path.write_bytes(d.content)
+                used_pb.add(h["id"])
+                return True
+        except Exception as e:
+            print("pixabay failed:", e)
+    return False
+
+
+def video_size(path):
+    out = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                                   "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)])
+    w, h = out.decode().strip().split(",")[:2]
+    return int(w), int(h)
+
+
 last_good_image = None
 
 PALETTES = [((18, 24, 58), (88, 60, 160)), ((10, 40, 60), (20, 130, 150)), ((40, 16, 50), (190, 70, 110)),
@@ -163,30 +230,64 @@ def gradient_card(seed_text, path):
     Image.alpha_composite(img, overlay).convert("RGB").save(path, quality=92)
 
 
+def cf_image(prompt, path):
+    """Cloudflare Workers AI FLUX.1 schnell. Returns True when a picture was saved."""
+    global cf_dead, cf_fail
+    if cf_dead or not (CF_ACCOUNT and CF_TOKEN):
+        return False
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+    for attempt in range(3):
+        try:
+            r = requests.post(url, headers={"Authorization": f"Bearer {CF_TOKEN}"},
+                              json={"prompt": prompt[:1900], "steps": 6}, timeout=120)
+            if r.status_code in (401, 403):
+                print(f"cloudflare refused ({r.status_code}): check CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN")
+                cf_dead = True
+                return False
+            if r.status_code == 429:
+                print("cloudflare limit reached:", r.text[:160]); time.sleep(5 * (attempt + 1)); continue
+            r.raise_for_status()
+            path.write_bytes(base64.b64decode(r.json()["result"]["image"]))
+            cf_fail = 0
+            return True
+        except Exception as e:
+            print("cloudflare image retry:", e); time.sleep(5 * (attempt + 1))
+    cf_fail += 1
+    if cf_fail >= 2:   # two pictures in a row failed (often the free daily limit): stop wasting time
+        print("cloudflare images switched off for this run")
+        cf_dead = True
+    return False
+
+
 def make_image(prompt, path):
     global last_good_image, pollinations_dead
+    full = ((CHARACTER + ", ") if CHARACTER else "") + prompt + ", " + STYLE_SUFFIX
+    if cf_image(full, path):
+        last_good_image = path
+        return True
     if not pollinations_dead:
         headers = {"Authorization": f"Bearer {POLL_KEY}"} if POLL_KEY else {}
-        look = "wide, cinematic, highly detailed" if KIND == "long" else "vertical, cinematic, highly detailed"
         for attempt in range(3):
             try:
-                u = (POLL_URL + urllib.parse.quote(f"{prompt}, {look}")
+                u = (POLL_URL + urllib.parse.quote(full)
                      + f"?width={W}&height={H}&nologo=true&seed={random.randint(1, 10**6)}")
                 r = requests.get(u, headers=headers, timeout=90)
                 if r.status_code in (401, 402, 403):
                     # Payment/auth problems do not fix themselves: stop retrying for the whole run.
-                    print(f"image service refused ({r.status_code}); using fallback backgrounds from now on")
+                    print(f"pollinations refused ({r.status_code}); not using it again this run")
                     pollinations_dead = True
                     break
                 r.raise_for_status()
                 if r.headers.get("content-type", "").startswith("image"):
-                    path.write_bytes(r.content); last_good_image = path; return
+                    path.write_bytes(r.content); last_good_image = path; return True
             except Exception as e:
                 print("image retry:", e); time.sleep(6 * (attempt + 1))
-    # Service failed or is dead: reuse the last good picture if we have one, else draw a gradient card.
-    if last_good_image and last_good_image.exists():
-        path.write_bytes(last_good_image.read_bytes()); return
-    gradient_card(prompt, path)
+    return False
+
+
+def ai_images_available():
+    cf_ok = bool(CF_ACCOUNT and CF_TOKEN) and not cf_dead
+    return cf_ok or not pollinations_dead
 
 
 def duration(path):
@@ -251,36 +352,75 @@ def write_ass(words, narration, dur, path):
     for n, ch in enumerate(chunks):
         start = ch[0][0]
         end = chunks[n + 1][0][0] if n + 1 < len(chunks) else ch[-1][1] + 0.3
-        text = " ".join(w[2] for w in ch).upper().replace("{", "").replace("}", "")
+        text = " ".join(w[2] for w in ch).replace("{", "").replace("}", "")
+        if CUR_STYLE["upper"]:
+            text = text.upper()
+        text = POP + text
         lines.append(f"Dialogue: 0,{ts(start)},{ts(end)},Default,,0,0,0,,{text}")
     path.write_text(ass_header() + "\n".join(lines) + "\n", encoding="utf-8")
 
 
-def render_clip(i, sc, dur, ass):
-    vid, img, aud, clip = OUT / f"{i}_src.mp4", OUT / f"{i}.jpg", OUT / f"{i}.mp3", OUT / f"{i}.mp4"
-    sub = f"subtitles={ass.as_posix()}"
+def render_stock(vid, aud, dur, sub, clip):
+    """Stock clip fills the frame; if its shape does not match, it sits sharp over a blurred copy of itself."""
+    w, h = video_size(vid)
     fit = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
-    if pexels_clip(sc.get("search_query", ""), vid):
-        inp = ["-stream_loop", "-1", "-i", str(vid)]
-        vf = f"{fit},fps=30,{sub},format=yuv420p"
-        run(["ffmpeg", "-y", "-loglevel", "error", *inp, "-i", str(aud), "-vf", vf,
-             "-map", "0:v", "-map", "1:a", "-t", f"{dur + 0.2:.2f}", "-r", "30",
-             "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
-             "-shortest", str(clip)])
-        return clip
-    # No stock clip: build several images per scene, each with a different camera move, joined by crossfades.
+    if abs(w / h - W / H) < 0.3:
+        fc = f"[0:v]{fit},fps=30,{sub},format=yuv420p[vout]"
+    else:
+        fc = (f"[0:v]split[a][b];[a]{fit},boxblur=30:5[bg];"
+              f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
+              f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,{sub},format=yuv420p[vout]")
+    run(["ffmpeg", "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", str(vid), "-i", str(aud),
+         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a", "-t", f"{dur + 0.2:.2f}", "-r", "30",
+         "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+         "-shortest", str(clip)])
+
+
+def gradient_video(seed_text, dur, aud, sub, clip):
+    """Free animated background: slowly moving colour gradient (no API, no download)."""
+    rnd = random.Random(seed_text)
+    c1, c2 = rnd.choice(PALETTES)
+    mid = tuple(max(0, min(255, (a + b) // 2 + rnd.randint(-20, 50))) for a, b in zip(c1, c2))
+    hx = lambda c: "0x%02x%02x%02x" % tuple(c)
+    src = (f"gradients=s={W}x{H}:c0={hx(c1)}:c1={hx(mid)}:c2={hx(c2)}:nb_colors=3:"
+           f"speed=0.04:rate=30:duration={dur + 0.3:.2f}")
+    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", src, "-i", str(aud),
+         "-vf", f"{sub},format=yuv420p", "-map", "0:v", "-map", "1:a", "-t", f"{dur + 0.2:.2f}", "-r", "30",
+         "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+         "-shortest", str(clip)])
+
+
+def render_clip(i, sc, dur, ass):
+    vid, aud, clip = OUT / f"{i}_src.mp4", OUT / f"{i}.mp3", OUT / f"{i}.mp4"
+    sub = f"subtitles={ass.as_posix()}"
     prompts = sc.get("image_prompts") or ([sc["image_prompt"]] if sc.get("image_prompt") else [])
     prompts = [p for p in prompts if p][:3] or [sc.get("narration", "abstract background")]
-    imgs = []
-    for k, p in enumerate(prompts):
-        if k > 0 and pollinations_dead:
-            break  # fallback backgrounds: one per scene is enough and keeps the run fast
-        ip = OUT / f"{i}_{k}.jpg"
-        make_image(p, ip)
-        imgs.append(ip)
-        if not pollinations_dead:
-            time.sleep(1)
-    build_shots(imgs, dur + 0.2, aud, sub, clip, i)
+    # 1) AI pictures that match what the scene says, each with its own camera move, joined by crossfades.
+    if ai_images_available():
+        imgs = []
+        for k, p in enumerate(prompts):
+            if k > 0 and not ai_images_available():
+                break
+            ip = OUT / f"{i}_{k}.jpg"
+            if make_image(p, ip):
+                imgs.append(ip)
+                time.sleep(1)
+        if imgs:
+            build_shots(imgs, dur + 0.2, aud, sub, clip, i)
+            return clip
+    # 2) Free stock footage, if a Pexels or Pixabay key is set.
+    q = sc.get("search_query", "")
+    if pexels_clip(q, vid) or pixabay_clip(q, vid):
+        render_stock(vid, aud, dur, sub, clip)
+        return clip
+    # 3) Last resort: a moving colour gradient.
+    try:
+        gradient_video(prompts[0], dur, aud, sub, clip)
+    except Exception as e:
+        print("gradient video failed, using still card:", e)
+        ip = OUT / f"{i}_0.jpg"
+        gradient_card(prompts[0], ip)
+        build_shots([ip], dur + 0.2, aud, sub, clip, i)
     return clip
 
 
@@ -336,8 +476,12 @@ def add_music(video, final):
 
 
 def main():
+    global CUR_STYLE, CHARACTER
     hist = json.loads(HIST.read_text()) if HIST.exists() else []
     data = plan(hist)
+    CUR_STYLE = STYLES.get(str(data.get("style", "")).strip().lower(), STYLES["clean"])
+    CHARACTER = str(data.get("character", "")).strip()[:300]
+    print("caption style:", CUR_STYLE["font"], "| character:", CHARACTER)
     clips = []
     total = 0.0
     for i, sc in enumerate(data["scenes"]):
