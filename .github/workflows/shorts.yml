@@ -1,15 +1,24 @@
 name: shorts
 on:
   schedule:
-    - cron: "0 1,5,9,13,17 * * *"
+    - cron: "0 1,5,9,13,17 * * *"   # 5 Shorts a day
+    - cron: "0 21 * * *"            # 1 long video a day
   workflow_dispatch:
+    inputs:
+      kind:
+        description: "short or long"
+        type: choice
+        options: [short, long]
+        default: short
 permissions:
   contents: write
 concurrency: shorts
 jobs:
   make:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 120
+    env:
+      KIND: ${{ github.event_name == 'workflow_dispatch' && inputs.kind || (github.event.schedule == '0 21 * * *' && 'long' || 'short') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,6 +37,7 @@ jobs:
           NICHE: ${{ vars.NICHE }}
       - name: Temporary public URL
         id: rel
+        if: ${{ env.KIND == 'short' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -42,7 +52,7 @@ jobs:
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
       - name: Upload to Instagram
-        if: ${{ !cancelled() && steps.rel.outputs.url != '' }}
+        if: ${{ !cancelled() && env.KIND == 'short' && steps.rel.outputs.url != '' }}
         run: python upload_instagram.py
         env:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
