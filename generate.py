@@ -21,7 +21,11 @@ if not POLL_URL.endswith("/"):
 # Free AI pictures from Cloudflare Workers AI (FLUX.1 schnell): free account + API token, no card.
 def clean_secret(name):
     """First word of a GitHub secret: survives stray spaces, line breaks and a pasted 'Bearer' prefix."""
-    parts = [x for x in os.environ.get(name, "").split() if x.lower() not in ("bearer", "authorization:")]
+    raw = os.environ.get(name, "")
+    m = re.search(r"[Bb]earer\s+([A-Za-z0-9_\-]{20,})", raw)   # a whole pasted curl command: take the token inside it
+    if m:
+        return m.group(1)
+    parts = [x for x in raw.split() if x.lower() not in ("bearer", "authorization:")]
     return parts[0] if parts else ""
 
 
@@ -483,7 +487,7 @@ def add_music(video, final):
 
 def main():
     global CUR_STYLE, CHARACTER
-    print(f"generate.py v5 | cloudflare token length {len(CF_TOKEN)} (normally 40), account id length {len(CF_ACCOUNT)} (normally 32)")
+    print(f"generate.py v6 | cloudflare token length {len(CF_TOKEN)} (normally 40), account id length {len(CF_ACCOUNT)} (normally 32)")
     hist = json.loads(HIST.read_text()) if HIST.exists() else []
     data = plan(hist)
     CUR_STYLE = STYLES.get(str(data.get("style", "")).strip().lower(), STYLES["clean"])
