@@ -28,13 +28,25 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg fonts-dejavu-core
+          # caption fonts: a missing one is skipped, it never breaks the run
+          for p in fonts-oswald fonts-open-sans fonts-montserrat fonts-comic-neue fonts-liberation; do
+            sudo apt-get install -y "$p" || true
+          done
+          fc-cache -f
           pip install -r requirements.txt
+          pip install -U edge-tts requests pillow
       - name: Generate video
         run: python generate.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          POLLINATIONS_KEY: ${{ secrets.POLLINATIONS_KEY }}
           NICHE: ${{ vars.NICHE }}
+          VOICE: ${{ vars.VOICE }}
+          IMAGE_STYLE: ${{ vars.IMAGE_STYLE }}
       - name: Temporary public URL
         id: rel
         if: ${{ env.KIND == 'short' }}
