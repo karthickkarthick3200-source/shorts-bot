@@ -9,7 +9,7 @@ OUT = pathlib.Path("out"); OUT.mkdir(exist_ok=True)
 HIST = pathlib.Path("history.json")
 MUSIC_DIR = pathlib.Path("music")
 NICHE = os.environ.get("NICHE") or "surprising science and history facts"
-VOICE = os.environ.get("VOICE", "en-US-AndrewMultilingualNeural")
+VOICE = os.environ.get("VOICE", "").strip() or "en-US-GuyNeural"   # an empty GitHub variable must not become an empty voice
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY = os.environ.get("PIXABAY_API_KEY", "")
