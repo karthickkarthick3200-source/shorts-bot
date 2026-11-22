@@ -1,4 +1,4 @@
-import asyncio, json, os, pathlib, random, subprocess, time, urllib.parse
+import asyncio, json, os, pathlib, random, re, subprocess, time, urllib.parse
 import edge_tts, requests
 
 KIND = os.environ.get("KIND", "short").strip().lower()      # "short" (vertical) or "long" (landscape)
@@ -12,7 +12,14 @@ NICHE = os.environ.get("NICHE") or "surprising science and history facts"
 VOICE = os.environ.get("VOICE", "en-US-AndrewMultilingualNeural")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
+# Optional: a free Pollinations key (sent as a Bearer token) and a custom endpoint if their docs change.
+POLL_KEY = os.environ.get("POLLINATIONS_KEY", "").strip()
+POLL_URL = os.environ.get("POLLINATIONS_URL", "").strip() or "https://image.pollinations.ai/prompt/"
+if not POLL_URL.endswith("/"):
+    POLL_URL += "/"
 used_videos = set()
+pollinations_dead = False   # set to True on 401/402/403 so we stop wasting time on retries
+
 
 def ass_header():
     size, margin = (66, 110) if KIND == "long" else (92, 520)
@@ -129,23 +136,57 @@ def pexels_clip(query, path):
 
 last_good_image = None
 
+PALETTES = [((18, 24, 58), (88, 60, 160)), ((10, 40, 60), (20, 130, 150)), ((40, 16, 50), (190, 70, 110)),
+            ((16, 28, 20), (60, 150, 100)), ((30, 30, 30), (200, 120, 40)), ((12, 18, 40), (40, 110, 200))]
+
+
+def gradient_card(seed_text, path):
+    """Free, offline background: a vertical gradient with soft circles. Never fails the pipeline."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+             f"color=c=0x{random.randint(0x101010, 0x444444):06x}:s={W}x{H}", "-frames:v", "1", str(path)])
+        return
+    rnd = random.Random(seed_text)
+    c1, c2 = rnd.choice(PALETTES)
+    col = Image.new("RGB", (1, H))
+    for y in range(H):
+        col.putpixel((0, y), tuple(int(c1[j] + (c2[j] - c1[j]) * y / H) for j in range(3)))
+    img = col.resize((W, H)).convert("RGBA")
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    for _ in range(5):
+        r = rnd.randint(min(W, H) // 6, min(W, H) // 3)
+        x, y = rnd.randint(0, W), rnd.randint(0, H)
+        d.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255, rnd.randint(12, 28)))
+    Image.alpha_composite(img, overlay).convert("RGB").save(path, quality=92)
+
 
 def make_image(prompt, path):
-    global last_good_image
-    for attempt in range(6):
-        try:
-            u = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(prompt + ", vertical, cinematic, highly detailed")
-                 + f"?width={W}&height={H}&nologo=true&seed={random.randint(1, 10**6)}")
-            r = requests.get(u, timeout=120); r.raise_for_status()
-            if r.headers.get("content-type", "").startswith("image"):
-                path.write_bytes(r.content); last_good_image = path; return
-        except Exception as e:
-            print("image retry:", e); time.sleep(6 * (attempt + 1))
-    # All retries failed: reuse the last good picture so we never show a plain colour block.
+    global last_good_image, pollinations_dead
+    if not pollinations_dead:
+        headers = {"Authorization": f"Bearer {POLL_KEY}"} if POLL_KEY else {}
+        look = "wide, cinematic, highly detailed" if KIND == "long" else "vertical, cinematic, highly detailed"
+        for attempt in range(3):
+            try:
+                u = (POLL_URL + urllib.parse.quote(f"{prompt}, {look}")
+                     + f"?width={W}&height={H}&nologo=true&seed={random.randint(1, 10**6)}")
+                r = requests.get(u, headers=headers, timeout=90)
+                if r.status_code in (401, 402, 403):
+                    # Payment/auth problems do not fix themselves: stop retrying for the whole run.
+                    print(f"image service refused ({r.status_code}); using fallback backgrounds from now on")
+                    pollinations_dead = True
+                    break
+                r.raise_for_status()
+                if r.headers.get("content-type", "").startswith("image"):
+                    path.write_bytes(r.content); last_good_image = path; return
+            except Exception as e:
+                print("image retry:", e); time.sleep(6 * (attempt + 1))
+    # Service failed or is dead: reuse the last good picture if we have one, else draw a gradient card.
     if last_good_image and last_good_image.exists():
         path.write_bytes(last_good_image.read_bytes()); return
-    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
-         f"color=c=0x{random.randint(0, 0x444444):06x}:s={W}x{H}", "-frames:v", "1", str(path)])
+    gradient_card(prompt, path)
 
 
 def duration(path):
@@ -154,20 +195,45 @@ def duration(path):
     return float(out.decode().strip())
 
 
+def clean_text(text):
+    """Remove emojis, markdown and odd symbols that can make edge-tts return no audio."""
+    text = re.sub(r"[*_`#~<>\[\]{}|\\^=+]", " ", str(text))
+    text = re.sub(r"[^\w\s.,!?'\-:;%$&()/]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 async def tts(text, path):
-    for attempt in range(4):
+    global VOICE
+    text = clean_text(text)
+    if not text:
+        raise SystemExit("TTS failed: empty narration")
+    # Multilingual voices do not always send word timings, so we fall back step by step.
+    configs = [(VOICE, "WordBoundary"), (VOICE, "SentenceBoundary"),
+               ("en-US-GuyNeural", "WordBoundary"), ("en-US-AriaNeural", "SentenceBoundary")]
+    for attempt in range(6):
+        voice, boundary = configs[min(attempt, len(configs) - 1)]
         try:
-            words = []
-            comm = edge_tts.Communicate(text, VOICE, rate="+4%", boundary="WordBoundary")
+            words, got = [], False
+            comm = edge_tts.Communicate(text, voice, rate="+4%", boundary=boundary)
             with open(path, "wb") as f:
                 async for ch in comm.stream():
                     if ch["type"] == "audio":
-                        f.write(ch["data"])
-                    elif ch["type"] == "WordBoundary":
-                        words.append((ch["offset"] / 1e7, (ch["offset"] + ch["duration"]) / 1e7, ch["text"]))
+                        f.write(ch["data"]); got = True
+                    elif ch["type"] in ("WordBoundary", "SentenceBoundary"):
+                        s = ch["offset"] / 1e7
+                        e = (ch["offset"] + ch["duration"]) / 1e7
+                        toks = ch["text"].split()
+                        if ch["type"] == "WordBoundary" or len(toks) <= 1:
+                            words.append((s, e, ch["text"]))
+                        else:  # a whole sentence: spread its words evenly across its time
+                            step = (e - s) / len(toks)
+                            words += [(s + i * step, s + (i + 1) * step, t) for i, t in enumerate(toks)]
+            if not got or path.stat().st_size == 0:
+                raise RuntimeError("empty audio file")
+            VOICE = voice  # keep the same voice for the rest of the video
             return words
         except Exception as e:
-            print("tts retry:", e); await asyncio.sleep(4 * (attempt + 1))
+            print(f"tts retry ({voice}, {boundary}):", e); await asyncio.sleep(3 * (attempt + 1))
     raise SystemExit("TTS failed")
 
 
@@ -207,10 +273,13 @@ def render_clip(i, sc, dur, ass):
     prompts = [p for p in prompts if p][:3] or [sc.get("narration", "abstract background")]
     imgs = []
     for k, p in enumerate(prompts):
+        if k > 0 and pollinations_dead:
+            break  # fallback backgrounds: one per scene is enough and keeps the run fast
         ip = OUT / f"{i}_{k}.jpg"
         make_image(p, ip)
         imgs.append(ip)
-        time.sleep(1)
+        if not pollinations_dead:
+            time.sleep(1)
     build_shots(imgs, dur + 0.2, aud, sub, clip, i)
     return clip
 
