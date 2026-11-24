@@ -12,15 +12,22 @@ TRENDS_AUTO = pathlib.Path("trends_auto.txt")
 MUSIC_DIR = pathlib.Path("music")
 DEFAULT_NICHE = ("Fun, useful trending content for Indian viewers in Tamil, with Thanglish captions: "
                  "AI tools explained as short skits, game facts and tech news. Original characters and scripts only.")
-NICHE = os.environ.get("NICHE", "").strip() or DEFAULT_NICHE
+# CHANNEL_LANG: "en" (default) = simple Indian-friendly English, "ta" = Tamil voice + Thanglish captions.
+CHANNEL_LANG = os.environ.get("CHANNEL_LANG", "").strip().lower()
+if CHANNEL_LANG not in ("en", "ta"):
+    CHANNEL_LANG = "en"
+TA = CHANNEL_LANG == "ta"
+DEFAULT_NICHE_EN = ("Fun, useful trending content for Indian viewers in simple English: AI tools explained as short skits, "
+                    "game facts, tech news, motivation and gym tips. Original characters and scripts only.")
+NICHE = os.environ.get("NICHE", "").strip() or (DEFAULT_NICHE if TA else DEFAULT_NICHE_EN)
 
-# ---- Voice: free Edge Tamil voices. A leftover English VOICE variable in GitHub is ignored on purpose. ----
-TAMIL_VOICES = ["ta-IN-PallaviNeural", "ta-IN-ValluvarNeural"]
+# ---- Voice: free Edge voices. A voice variable of the wrong language is ignored on purpose. ----
+TAMIL_VOICES = ["ta-IN-PallaviNeural", "ta-IN-ValluvarNeural"] if TA else ["en-US-GuyNeural", "en-US-AriaNeural"]
 _v = os.environ.get("VOICE", "").strip()
-VOICE = _v if _v.startswith("ta-") else TAMIL_VOICES[0]
-if _v and not _v.startswith("ta-"):
-    print(f"VOICE variable '{_v}' is not a Tamil voice, using {VOICE} instead")
-TTS_RATE = os.environ.get("TTS_RATE", "").strip() or "+0%"       # e.g. "+8%" faster, "-5%" slower
+VOICE = _v if _v.startswith("ta-" if TA else "en-") else TAMIL_VOICES[0]
+if _v and VOICE != _v:
+    print(f"VOICE variable '{_v}' does not match CHANNEL_LANG={CHANNEL_LANG}, using {VOICE} instead")
+TTS_RATE = os.environ.get("TTS_RATE", "").strip() or ("+0%" if TA else "+4%")       # e.g. "+8%" faster, "-5%" slower
 TTS_PITCH = os.environ.get("TTS_PITCH", "").strip() or "+0Hz"    # e.g. "+4Hz" or "-3Hz"
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
@@ -104,7 +111,7 @@ def margin_v():
 
 def ass_header():
     st = CUR_STYLE
-    size = int((60 if KIND == "long" else 80) * st["scale"])
+    size = int((72 if KIND == "long" else 96) * st["scale"])
     sec, ocol, back = st.get("sec", "&H000000FF"), st.get("ocol", BLK), st.get("back", "&H64000000")
     bs, ow, sh = st.get("bs", 1), st.get("ow", 9), st.get("sh", 2)
     return f"""[Script Info]
@@ -168,7 +175,7 @@ def read_trends():
     return "\n".join(lines_of(TRENDS) + auto[:12])
 
 
-RULES_COMMON = """- Only state facts you are certain are true, or that appear in the TRENDS list. No made-up statistics, no made-up tools, no made-up prices, no made-up release dates. Only name tools that really exist. If you are not sure, teach a general idea instead.
+RULES_TA = """- Only state facts you are certain are true, or that appear in the TRENDS list. No made-up statistics, no made-up tools, no made-up prices, no made-up release dates. Only name tools that really exist. If you are not sure, teach a general idea instead.
 - The title may ONLY promise what the video actually explains. Never use: secret, hack, hidden, shocking, they don't want you to know, or any claim about earning money, getting paid or getting rich.
 - No numbers of any kind in the script (no hours, days, percentages, amounts, counts) unless the exact number is written in the TRENDS line. Say 'a day' or 'a few minutes' only as a general suggestion, never as a fact or a result (do not say things like 'urges fade in 24 hours').
 - Original characters and original script only. Never copy another creator, show or game character.
@@ -178,12 +185,39 @@ RULES_COMMON = """- Only state facts you are certain are true, or that appear in
 - Fitness, gym or health topics: general safe form and habit tips only. No medical claims, no weight-loss or muscle-gain promises, no diet plans, no numbers; beginners start light and stop if something hurts.
 - Scene 1 caption and narration must match the title's promise."""
 
-JSON_KEYS = """Return ONLY JSON with keys:
+JSON_KEYS_TA = """Return ONLY JSON with keys:
 title (max 70 chars, Thanglish with English tool or game names, clear and honest, no clickbait),
 description (1-2 sentences in Thanglish plus one plain English sentence for search, no income claims),
 hashtags (array of 5 strings, no #),
 character (ONE sentence describing a friendly original cartoon main character who appears in most scenes: a person, animal or object with age/colour/clothes, e.g. "a cheeky orange cat wearing round glasses and a yellow hoodie"),
-scenes (array of {n} objects with: "narration_ta" (Tamil script voice text), "caption" (the same sentence in Thanglish), "search_queries" (array of exactly 2 DIFFERENT 2-3 word English queries for real stock footage that fits the scene, e.g. ["phone scrolling", "student laptop"]), "image_prompts" (array of exactly 2 picture descriptions in English. Each must show exactly what that scene says: a concrete subject, an action and a setting, featuring the main character whenever it fits. The two must be DIFFERENT moments or camera angles. Never ask for text, letters, logos or screens with readable words in the pictures))."""
+scenes (array of {n} objects with: "narration_ta" (Tamil script voice text), "caption" (the same sentence in Thanglish), "search_queries" (array of exactly 2 DIFFERENT 2-3 word English queries for real stock footage that fits the scene, e.g. ["typing laptop", "cooking vegetables"]; film-able objects and actions only, never abstract ideas, never people types), "image_prompts" (array of exactly 2 picture descriptions in English. Each must show exactly what that scene says: a concrete subject, an action and a setting, featuring the main character whenever it fits. The two must be DIFFERENT moments or camera angles. Never ask for text, letters, logos or screens with readable words in the pictures))."""
+
+
+RULES_EN = """- Only state facts you are certain are true, or that appear in the TRENDS list. No made-up statistics, no made-up tools, no made-up prices, no made-up release dates. Only name tools that really exist. If you are not sure, teach a general idea instead.
+- The title may ONLY promise what the video actually explains. Never use: secret, hack, hidden, shocking, they don't want you to know, or any claim about earning money, getting paid or getting rich.
+- Original characters and original script only. Never copy another creator, show or game character.
+- No numbers of any kind in the script (no hours, days, percentages, amounts, counts) unless the exact number is written in the TRENDS line.
+- narration is plain spoken English for Indian viewers: short sentences, simple everyday words, friendly and a little funny. No emojis, no stage directions, no symbols.
+- caption is the SAME sentence as narration, copied exactly.
+- Fitness, gym or health topics: general safe form and habit tips only. No medical claims, no weight-loss or muscle-gain promises, no diet plans, no numbers; beginners start light and stop if something hurts.
+- Scene 1 is a hook of AT MOST 10 words. It does ONE of: names a mistake the viewer makes right now; rejects common advice; shows the end result first. No greeting, no tool name yet, no 'did you know'. Never invent a number or a source."""
+
+JSON_KEYS_EN = """Return ONLY JSON with keys:
+title (max 70 chars, clear and honest, no clickbait),
+description (1-2 sentences, no income claims),
+hashtags (array of 5 strings, no #),
+character (ONE sentence describing a friendly original cartoon main character who appears in most scenes, e.g. "a cheeky orange cat wearing round glasses and a yellow hoodie"),
+scenes (array of {n} objects with: "narration" (spoken English), "caption" (the same sentence), "search_queries" (array of exactly 2 DIFFERENT 2-3 word English queries for real stock footage, e.g. ["typing laptop", "cooking vegetables"]; film-able objects and actions only, never abstract ideas, never people types), "image_prompts" (array of exactly 2 picture descriptions in English. Each must show exactly what that scene says: a concrete subject, an action and a setting, featuring the main character whenever it fits. The two must be DIFFERENT moments or camera angles. Never ask for text, letters, logos or screens with readable words in the pictures))."""
+
+RULES_COMMON = RULES_TA if TA else RULES_EN
+JSON_KEYS = JSON_KEYS_TA if TA else JSON_KEYS_EN
+SPOKEN = "spoken in Tamil" if TA else "spoken in simple English"
+VK = "narration_ta" if TA else "narration"
+WS, WL = ("8-13", "18-26") if TA else ("11-15", "26-32")
+
+
+def vt(sc):
+    return sc.get("narration_ta") or sc.get("narration") or ""
 
 
 def build_prompt(hist):
@@ -196,7 +230,7 @@ def build_prompt(hist):
                   f"around that topic without adding any claims about it):\n{trends}")
     fmt = random.choice(FORMATS)
     if KIND == "long":
-        return f"""You write fun, useful YouTube videos of about 4 minutes for Indian viewers of all ages, spoken in Tamil. Channel: {NICHE}.
+        return f"""You write fun, useful YouTube videos of about 4 minutes for Indian viewers of all ages, {SPOKEN}. Channel: {NICHE}.
 {topic_rule}
 Do NOT reuse any of these earlier titles: {recent}.
 Format for this video: {fmt}.
@@ -207,15 +241,15 @@ Structure (22 scenes):
 - Scenes 18-20: three common mistakes and how to avoid them.
 - Scenes 21-22: a short recap of the one thing to remember.
 Rules:
-- Exactly 22 scenes. Each narration_ta is 18-26 words, ONE idea per scene.
+- Exactly 22 scenes. Each {VK} is {WL} words, ONE idea per scene.
 {RULES_COMMON}
 {JSON_KEYS.format(n=22)}"""
-    return f"""You write fun, useful YouTube Shorts for Indian viewers of all ages, spoken in Tamil. Channel: {NICHE}.
+    return f"""You write fun, useful YouTube Shorts for Indian viewers of all ages, {SPOKEN}. Channel: {NICHE}.
 {topic_rule}
 Do NOT reuse any of these earlier titles: {recent}.
 Format for this video: {fmt}.
 Rules:
-- Exactly 8 scenes. Each narration_ta is 8-13 words, short sentences, ONE idea per scene. Scene 1 is at most 10 words.
+- Exactly 8 scenes. Each {VK} is {WS} words, short sentences, ONE idea per scene. Scene 1 is at most 10 words.
 - Scenes 2-6 give one clear point the viewer can use or remember, with a small joke from the character.
 - The last scene sums up the one thing to remember, or loops back to the hook.
 {RULES_COMMON}
@@ -229,16 +263,16 @@ def nwords(s):
 def length_ok(data):
     """Strict check on scene count, spoken length (Tamil is about 2.2 words per second) and the hook length."""
     scenes = data["scenes"]
-    words = sum(nwords(sc.get("narration_ta", "")) for sc in scenes)
-    hook_ok = nwords(scenes[0].get("narration_ta", "")) <= 12
+    words = sum(nwords(vt(sc)) for sc in scenes)
+    hook_ok = nwords(vt(scenes[0])) <= 12
     if KIND == "long":
-        return 18 <= len(scenes) <= 26 and 380 <= words <= 700 and hook_ok
-    return 7 <= len(scenes) <= 9 and 60 <= words <= 112 and hook_ok
+        return 18 <= len(scenes) <= 26 and (380 if TA else 540) <= words <= (700 if TA else 780) and hook_ok
+    return 7 <= len(scenes) <= 9 and (60 if TA else 85) <= words <= (112 if TA else 125) and hook_ok
 
 
 def sane(data):
     sc = data["scenes"]
-    return len(sc) >= 3 and all(s.get("narration_ta") and s.get("caption") for s in sc)
+    return len(sc) >= 3 and all(vt(s) for s in sc)
 
 
 def plan(hist):
@@ -791,12 +825,13 @@ def add_music(video, final):
 
 def main():
     global CUR_STYLE, CUR_NAME, CHARACTER
-    print(f"generate.py v7 (Tamil) | voice {VOICE} rate {TTS_RATE} pitch {TTS_PITCH} | visuals {VISUALS or 'stock'} | "
+    print(f"generate.py v8 ({CHANNEL_LANG}) | voice {VOICE} rate {TTS_RATE} pitch {TTS_PITCH} | visuals {VISUALS or 'stock'} | "
           f"pexels {'yes' if PEXELS else 'no'} pixabay {'yes' if PIXABAY else 'no'} | trends {'yes' if read_trends() else 'no'}")
     hist = json.loads(HIST.read_text()) if HIST.exists() else []
     data = plan(hist)
     forced = os.environ.get("CAPTION_STYLE", "").strip().lower()
-    CUR_NAME = forced if forced in STYLES else random.choice(list(STYLES))
+    pool = [k for k, v in STYLES.items() if v["fx"] != "basic"]     # the plain six only when forced
+    CUR_NAME = forced if forced in STYLES else random.choice(pool)
     CUR_STYLE = STYLES[CUR_NAME]
     CHARACTER = str(data.get("character", "")).strip()[:300]
     print("caption style:", CUR_NAME, "| character:", CHARACTER)
