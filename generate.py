@@ -147,6 +147,9 @@ EVERGREEN_IDEAS = [
     "how to use free AI tools safely: one habit that avoids a common mistake (no named tool claims)",
     "one simple study or practice trick, shown as a funny before/after skit",
     "one phone or gaming habit that wastes time, and the fix, as a skit with a talking animal",
+    "one simple gym habit for beginners (warm up, good form, rest days) told by a talking animal coach, no promises about results and no numbers",
+    "a motivational talk from a talking lion (original character) about showing up every day, kept short and funny",
+    "how to start learning AI as a beginner: one small practice habit, no course or tool claims, no numbers",
     "one simple money-saving habit for beginners as a skit (no income claims, no investment advice, no numbers)",
 ]
 
@@ -171,6 +174,7 @@ RULES_COMMON = """- Only state facts you are certain are true, or that appear in
 - narration_ta is the VOICE text: casual spoken Tamil in Tamil script, short plain sentences the way friends talk, not formal book Tamil. Write English words (tool names, game names) in Tamil script as they sound (for example ChatGPT as சாட்ஜிபிடி) so the Tamil voice can pronounce them. No emojis, no stage directions, no symbols.
 - caption is the SAME sentence written in Thanglish (Tamil in English letters, how people text it). It must say the same thing as narration_ta, same order, about the same number of words. Tool and game names are spelled normally in English (ChatGPT, GTA). No emojis.
 - Scene 1 is a hook of AT MOST 10 words. It does ONE of: names a mistake the viewer makes right now; rejects common advice; shows the end result first. No greeting, no tool name yet, no 'did you know'. Never invent a number or a source.
+- Fitness, gym or health topics: general safe form and habit tips only. No medical claims, no weight-loss or muscle-gain promises, no diet plans, no numbers; beginners start light and stop if something hurts.
 - Scene 1 caption and narration must match the title's promise."""
 
 JSON_KEYS = """Return ONLY JSON with keys:

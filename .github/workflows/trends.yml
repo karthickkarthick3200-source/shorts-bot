@@ -1,7 +1,7 @@
 name: trends
 on:
   schedule:
-    - cron: "30 0 * * 1"     # every Monday, 06:00 India time
+    - cron: "0 0 * * *"      # every day, 05:30 India time, before the first Short
   workflow_dispatch:
 permissions:
   contents: write
@@ -20,4 +20,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add trends_auto.txt || true
-          git diff --cached --quiet || (git commit -m "weekly trends" && git pull --rebase -X theirs && git push)
+          git diff --cached --quiet || (git commit -m "daily trends" && git pull --rebase -X theirs && git push)

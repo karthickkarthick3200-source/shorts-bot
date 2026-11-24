@@ -1,8 +1,10 @@
-"""Weekly: collect what is really trending (no AI guessing) into trends_auto.txt.
+"""Daily: collect what is really trending (no AI guessing) into trends_auto.txt.
 Sources, all free and without an API key:
   1. Google Trends India: today's trending searches (with the real traffic figure Google shows).
   2. Wikipedia: most-read pages yesterday (English and Tamil), a good sign of what the internet is talking about.
-  3. Google News India: headlines from many categories (AI, free tools, games, movies, cricket, world, science,
+  3. Steam top sellers and Reddit top posts of the day (games, fitness, motivation, AI, viral). A site that blocks the
+     server is skipped, never fatal.
+  4. Google News India: headlines from many categories (AI, free tools, games, movies, cricket, world, science,
      animals, food, skills, money saving...). Edit CATEGORIES below to add or remove anything.
 Only titles, sources and dates are written. Nothing is invented or summarised, so generate.py can only use real facts.
 Your own lines in trends.txt are never touched."""
@@ -21,9 +23,13 @@ CATEGORIES = [
     ("AI coding",        "Claude Code OR Cursor OR Copilot AI coding"),
     ("AI plugins",       "AI agents plugins skills MCP"),
     ("Gaming",           "GTA 6"),
+    ("Gaming India",     "BGMI OR Free Fire OR Minecraft OR Valorant news"),
+    ("Esports",          "esports tournament"),
     ("Gaming",           "new game release trailer"),
     ("Tech news",        "new smartphone launch India"),
     ("Tech news",        "technology news this week"),
+    ("Instagram viral",  "Instagram reels viral trend"),
+    ("Instagram viral",  "Instagram trend challenge"),
     ("Viral",            "viral video trending India"),
     ("Viral",            "viral AI video trend"),
     ("Movies",           "Tamil cinema new release"),
@@ -35,7 +41,12 @@ CATEGORIES = [
     ("Animals",          "viral animal video"),
     ("Food",             "viral food trend India"),
     ("Skills and study", "how to learn faster students skills"),
-    ("Health habits",    "healthy habits fitness India"),
+    ("Gym and exercise", "gym workout tips beginners"),
+    ("Gym and exercise", "fitness trend exercise"),
+    ("Motivation",       "motivation success story discipline"),
+    ("AI training",      "learn AI course free training"),
+    ("AI training",      "AI skills upskilling India"),
+    ("Health habits",    "healthy habits India"),
     ("Money saving",     "personal finance saving tips India"),
 ]
 
@@ -51,7 +62,7 @@ def clean(s):
 
 
 def google_news(query):
-    url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(query + " when:7d")
+    url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(query + " when:2d")
            + "&hl=en-IN&gl=IN&ceid=IN:en")
     return parse_news(rss_items(url))
 
@@ -124,6 +135,31 @@ def wikipedia_top(lang):
     return out, day.isoformat()
 
 
+REDDIT = [("Games", "gaming"), ("GTA 6", "GTA6"), ("Fitness", "Fitness"), ("Motivation", "GetMotivated"),
+          ("AI", "artificial"), ("AI", "ChatGPT"), ("Viral", "Damnthatsinteresting")]
+
+
+def steam_top():
+    r = requests.get("https://store.steampowered.com/api/featuredcategories?cc=in&l=english", timeout=30, headers=UA)
+    r.raise_for_status()
+    return parse_steam(r.json())
+
+
+def parse_steam(data):
+    return [clean(i["name"]) for i in data.get("top_sellers", {}).get("items", [])[:6] if i.get("name")]
+
+
+def reddit_top(sub):
+    r = requests.get(f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=5", timeout=30, headers=UA)
+    r.raise_for_status()
+    return parse_atom(ET.fromstring(r.text))
+
+
+def parse_atom(root):
+    return [clean(e.findtext("{http://www.w3.org/2005/Atom}title") or "")
+            for e in root.iter("{http://www.w3.org/2005/Atom}entry")][:3]
+
+
 def main():
     lines, seen = [], set()
 
@@ -149,6 +185,20 @@ def main():
         except Exception as e:
             print("wikipedia skipped:", lang, e)
 
+    try:
+        for name in steam_top()[:4]:
+            add("Gaming", f"'{name}' is on the Steam top sellers list today")
+    except Exception as e:
+        print("steam skipped:", e)
+
+    for label, sub in REDDIT:
+        try:
+            for t in reddit_top(sub)[:2]:
+                if t:
+                    add(f"Reddit {label}", f"Top post today on r/{sub}: {t}")
+        except Exception as e:
+            print("reddit skipped:", sub, e)
+
     for label, q in CATEGORIES:
         try:
             n = 0
@@ -163,7 +213,7 @@ def main():
     if not lines:
         print("nothing fetched; keeping the old file")
         sys.exit(0)
-    head = (f"# Auto-collected {datetime.date.today().isoformat()} (Google Trends India, Wikipedia, Google News India). "
+    head = (f"# Auto-collected {datetime.date.today().isoformat()} (Google Trends, Wikipedia, Steam, Reddit, Google News). "
             "Titles only: the script may use nothing beyond these words.\n")
     open(OUT, "w", encoding="utf-8").write(head + "\n".join(lines) + "\n")
     print(f"wrote {len(lines)} lines")
