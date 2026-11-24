@@ -51,6 +51,10 @@ jobs:
           POLLINATIONS_KEY: ${{ secrets.POLLINATIONS_KEY }}
           NICHE: ${{ vars.NICHE }}
           VOICE: ${{ vars.VOICE }}
+          TTS_RATE: ${{ vars.TTS_RATE }}
+          TTS_PITCH: ${{ vars.TTS_PITCH }}
+          CAPTION_STYLE: ${{ vars.CAPTION_STYLE }}
+          VISUALS: ${{ vars.VISUALS }}
           IMAGE_STYLE: ${{ vars.IMAGE_STYLE }}
       - name: Save test video (only when publish is unticked)
         if: ${{ env.PUBLISH == 'false' }}

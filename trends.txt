@@ -1,0 +1,8 @@
+# trends.txt - paste 5 lines here once a week. The bot picks ONE line per video and uses ONLY the facts you write.
+# Lines starting with # are ignored. If this file has no real lines, the bot makes a timeless skit instead (no news).
+# Format:  topic | facts you have checked yourself (keep them short, no guesses)
+#
+# Example of the shape (replace with your own checked facts):
+# GTA 6 | <fact 1 you checked> ; <fact 2 you checked>
+# AI video tools | <tool name> can <thing you tried yourself>
+# Phone tip | <simple tip you tested>
