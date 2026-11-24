@@ -788,7 +788,7 @@ def add_music(video, final):
 
 def main():
     global CUR_STYLE, CUR_NAME, CHARACTER
-    print(f"generate.py v7 (Tamil) | voice {VOICE} rate {TTS_RATE} pitch {TTS_PITCH} | visuals {VISUALS} | "
+    print(f"generate.py v7 (Tamil) | voice {VOICE} rate {TTS_RATE} pitch {TTS_PITCH} | visuals {VISUALS or 'stock'} | "
           f"pexels {'yes' if PEXELS else 'no'} pixabay {'yes' if PIXABAY else 'no'} | trends {'yes' if read_trends() else 'no'}")
     hist = json.loads(HIST.read_text()) if HIST.exists() else []
     data = plan(hist)
@@ -822,7 +822,9 @@ def main():
             "caption": f"{data['title']}\n\n{data['description']}\n\n{tags}",
             "tags": data.get("hashtags", [])}
     (OUT / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    (OUT / "script.txt").write_text("\n".join(script_lines) + f"\n\ncaption style: {CUR_NAME}\n", encoding="utf-8")
+    script_text = "\n".join(script_lines) + f"\n\ncaption style: {CUR_NAME}\n"
+    (OUT / "script.txt").write_text(script_text, encoding="utf-8")
+    print("----- SCRIPT -----\n" + script_text + "------------------")
     HIST.write_text(json.dumps((hist + [data["title"]])[-100:], ensure_ascii=False), encoding="utf-8")
     print(f"Done ({KIND}, {total:.0f}s):", meta["title"])
 
