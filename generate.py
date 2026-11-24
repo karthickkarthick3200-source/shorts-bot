@@ -134,21 +134,35 @@ FORMATS = [
     "myth vs fact: the character reacts to a common wrong belief and corrects it",
     "mistake and fix: show a mistake people make, a funny fail, then the right way",
     "quick tour: the character shows three small useful points, each with a joke",
+    "talking vegetable or fruit skit: the vegetable (original character) explains it in a funny way",
+    "talking lion or other animal (original character) gives a short motivational-style explanation, with humour",
     "reaction: the character reacts with big emotions to one simple confirmed fact, then explains it",
 ]
 
-EVERGREEN = ("No trends list was given today. Make an original skit teaching ONE simple, timeless idea "
-             "(a general AI-tool tip, a gaming habit, or a phone/tech habit). No news, no dates, no specific numbers, "
-             "no named release dates, no named people.")
+EVERGREEN_IDEAS = [
+    "a talking vegetable (original character) argues with its friends about one simple healthy habit",
+    "a talking lion (original character) coaches a nervous friend on one simple way to improve a skill, like learning faster or staying focused",
+    "how to use AI video tools in general: one beginner technique for writing a good prompt (no tool claims, no numbers)",
+    "what AI 'plugins' or 'skills' are, explained simply as a skit, with one safe habit when installing anything (no named download links)",
+    "how to use free AI tools safely: one habit that avoids a common mistake (no named tool claims)",
+    "one simple study or practice trick, shown as a funny before/after skit",
+    "one phone or gaming habit that wastes time, and the fix, as a skit with a talking animal",
+    "one simple money-saving habit for beginners as a skit (no income claims, no investment advice, no numbers)",
+]
+
+EVERGREEN = ("EVERGREEN IDEA for this video (no news, no dates, no specific numbers, no named people, no release dates): {idea}")
 
 
 def read_trends():
-    """Your own lines (trends.txt) first, then the weekly auto-collected headlines (trends_auto.txt)."""
-    lines = []
-    for f in (TRENDS, TRENDS_AUTO):
-        if f.exists():
-            lines += [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()]
-    return "\n".join(ln for ln in lines if ln and not ln.startswith("#"))
+    """All your own lines (trends.txt) plus a random 12 of the auto-collected ones (trends_auto.txt), so every
+    video sees a different mix of topics."""
+    def lines_of(f):
+        if not f.exists():
+            return []
+        return [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    auto = lines_of(TRENDS_AUTO)
+    random.shuffle(auto)
+    return "\n".join(lines_of(TRENDS) + auto[:12])
 
 
 RULES_COMMON = """- Only state facts you are certain are true, or that appear in the TRENDS list. No made-up statistics, no made-up tools, no made-up prices, no made-up release dates. Only name tools that really exist. If you are not sure, teach a general idea instead.
@@ -170,8 +184,11 @@ scenes (array of {n} objects with: "narration_ta" (Tamil script voice text), "ca
 def build_prompt(hist):
     recent = json.dumps(hist[-40:], ensure_ascii=False)
     trends = read_trends()
-    topic_rule = (f"TRENDS (the only news or facts you may use; pick ONE topic from this list that is not covered by the earlier titles; "
-                  f"use no detail that is not written here):\n{trends}") if trends else EVERGREEN
+    use_evergreen = (not trends) or random.random() < 0.3      # about 1 video in 3 is a timeless skit
+    topic_rule = (EVERGREEN.format(idea=random.choice(EVERGREEN_IDEAS)) if use_evergreen else
+                  f"TRENDS (the only news or facts you may use; pick ONE topic from this list that is not covered by the earlier titles; "
+                  f"use no detail that is not written here. If a line is only a title or headline, make a fun reaction or explainer skit "
+                  f"around that topic without adding any claims about it):\n{trends}")
     fmt = random.choice(FORMATS)
     if KIND == "long":
         return f"""You write fun, useful YouTube videos of about 4 minutes for Indian viewers of all ages, spoken in Tamil. Channel: {NICHE}.
