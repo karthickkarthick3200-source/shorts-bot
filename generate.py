@@ -7,18 +7,35 @@ if KIND not in ("short", "long"):
 W, H = (1920, 1080) if KIND == "long" else (1080, 1920)
 OUT = pathlib.Path("out"); OUT.mkdir(exist_ok=True)
 HIST = pathlib.Path("history.json")
+TRENDS = pathlib.Path("trends.txt")
+TRENDS_AUTO = pathlib.Path("trends_auto.txt")
 MUSIC_DIR = pathlib.Path("music")
-NICHE = os.environ.get("NICHE") or "surprising science and history facts"
-VOICE = os.environ.get("VOICE", "").strip() or "en-US-GuyNeural"   # an empty GitHub variable must not become an empty voice
+DEFAULT_NICHE = ("Fun, useful trending content for Indian viewers in Tamil, with Thanglish captions: "
+                 "AI tools explained as short skits, game facts and tech news. Original characters and scripts only.")
+NICHE = os.environ.get("NICHE", "").strip() or DEFAULT_NICHE
+
+# ---- Voice: free Edge Tamil voices. A leftover English VOICE variable in GitHub is ignored on purpose. ----
+TAMIL_VOICES = ["ta-IN-PallaviNeural", "ta-IN-ValluvarNeural"]
+_v = os.environ.get("VOICE", "").strip()
+VOICE = _v if _v.startswith("ta-") else TAMIL_VOICES[0]
+if _v and not _v.startswith("ta-"):
+    print(f"VOICE variable '{_v}' is not a Tamil voice, using {VOICE} instead")
+TTS_RATE = os.environ.get("TTS_RATE", "").strip() or "+0%"       # e.g. "+8%" faster, "-5%" slower
+TTS_PITCH = os.environ.get("TTS_PITCH", "").strip() or "+0Hz"    # e.g. "+4Hz" or "-3Hz"
+
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY = os.environ.get("PIXABAY_API_KEY", "")
+# VISUALS=stock (default): real moving stock clips first, then AI pictures, then gradient.
+# VISUALS=ai: AI pictures first (old behaviour).
+VISUALS = os.environ.get("VISUALS", "stock").strip().lower()
 # Optional: a free Pollinations key (sent as a Bearer token) and a custom endpoint if their docs change.
 POLL_KEY = os.environ.get("POLLINATIONS_KEY", "").strip()
 POLL_URL = os.environ.get("POLLINATIONS_URL", "").strip() or "https://image.pollinations.ai/prompt/"
 if not POLL_URL.endswith("/"):
     POLL_URL += "/"
-# Free AI pictures from Cloudflare Workers AI (FLUX.1 schnell): free account + API token, no card.
+
+
 def clean_secret(name):
     """First word of a GitHub secret: survives stray spaces, line breaks and a pasted 'Bearer' prefix."""
     raw = os.environ.get(name, "")
@@ -42,34 +59,63 @@ used_videos = set()
 used_pb = set()
 pollinations_dead = False   # set to True on 401/402/403 so we stop wasting time on retries
 
+# Random scene-to-scene looks inside a scene (two shots joined). A failing one falls back to a plain fade.
+TRANSITIONS = ["fade", "slideleft", "slideright", "wipeleft", "circleopen", "smoothleft",
+               "pixelize", "radial", "dissolve", "zoomin"]
 
-# Caption looks. The AI picks one per video to match the topic. Fonts come from the system (see workflow apt step);
-# if a font is missing, the renderer quietly falls back to a default font.
+# ----------------------------------------------------------------------------------------------
+# Caption looks. Colours are ASS &HAABBGGRR. Captions are Thanglish (Tamil written in English letters),
+# so every font here is a Latin font. A missing font quietly falls back to a default font.
+# fx = which animation function draws the captions (see FX at the bottom of the caption section).
+# Set the CAPTION_STYLE variable in GitHub to force one style; otherwise a random one is picked per video.
+# ----------------------------------------------------------------------------------------------
+YEL, WHT, CYN, MAG, GRN, RED = "&H0000E6FF", "&H00FFFFFF", "&H00FFFF00", "&H00FF00FF", "&H0080FF80", "&H000000FF"
+BLK, BOX = "&H00000000", "&H80101010"
 STYLES = {
-    "impact":   {"font": "Oswald",           "scale": 1.15, "bold": True, "color": "&H0000E6FF", "upper": True},
-    "clean":    {"font": "Open Sans",        "scale": 1.00, "bold": True, "color": "&H00FFFFFF", "upper": True},
-    "modern":   {"font": "Montserrat",       "scale": 0.90, "bold": True, "color": "&H00FFFFFF", "upper": True},
-    "friendly": {"font": "Comic Neue",       "scale": 1.10, "bold": True, "color": "&H0080F0FF", "upper": False},
-    "serif":    {"font": "Liberation Serif", "scale": 1.10, "bold": True, "color": "&H00E6F5FF", "upper": False},
-    "mono":     {"font": "DejaVu Sans Mono", "scale": 0.85, "bold": True, "color": "&H0080FF80", "upper": False},
+    # classic six
+    "impact":   {"font": "Oswald",           "scale": 1.15, "color": YEL, "upper": True,  "fx": "basic"},
+    "clean":    {"font": "Open Sans",        "scale": 1.00, "color": WHT, "upper": True,  "fx": "basic"},
+    "modern":   {"font": "Montserrat",       "scale": 0.90, "color": WHT, "upper": True,  "fx": "basic"},
+    "friendly": {"font": "Comic Neue",       "scale": 1.10, "color": "&H0080F0FF", "upper": False, "fx": "basic"},
+    "serif":    {"font": "Liberation Serif", "scale": 1.10, "color": "&H00E6F5FF", "upper": False, "fx": "basic"},
+    "mono":     {"font": "DejaVu Sans Mono", "scale": 0.85, "color": GRN, "upper": False, "fx": "basic"},
+    # trending looks
+    "kinetic-pop":      {"font": "Oswald",     "scale": 1.25, "color": YEL, "upper": True,  "fx": "kinetic", "chunk": 2},
+    "karaoke-pill":     {"font": "Montserrat", "scale": 0.95, "color": YEL, "sec": WHT, "ocol": "&H40201008",
+                         "bs": 3, "ow": 16, "sh": 0, "upper": False, "fx": "karaoke"},
+    "neon-glow":        {"font": "Montserrat", "scale": 1.00, "color": WHT, "upper": True,  "fx": "neon"},
+    "typewriter-hud":   {"font": "DejaVu Sans Mono", "scale": 0.85, "color": GRN, "upper": False, "fx": "typewriter"},
+    "glitch-rgb":       {"font": "Oswald",     "scale": 1.15, "color": WHT, "upper": True,  "fx": "glitch"},
+    "slide-wipe":       {"font": "Open Sans",  "scale": 1.00, "color": WHT, "upper": True,  "fx": "slide"},
+    "blur-focus":       {"font": "Montserrat", "scale": 1.00, "color": WHT, "upper": False, "fx": "blur"},
+    "minimal-box":      {"font": "Open Sans",  "scale": 0.85, "color": WHT, "ocol": BOX, "bs": 3, "ow": 14, "sh": 0,
+                         "upper": False, "fx": "minimal"},
+    "pull-back-reveal": {"font": "Oswald",     "scale": 1.15, "color": WHT, "upper": True,  "fx": "pullback"},
+    "tech-widgets":     {"font": "DejaVu Sans Mono", "scale": 0.85, "color": CYN, "upper": True, "fx": "tech"},
 }
+CUR_NAME = "clean"
 CUR_STYLE = STYLES["clean"]
 POP = "{\\fscx85\\fscy85\\t(0,120,\\fscx105\\fscy105)\\t(120,220,\\fscx100\\fscy100)\\fad(40,0)}"
 
 
+def margin_v():
+    return 110 if KIND == "long" else 520
+
+
 def ass_header():
     st = CUR_STYLE
-    size, margin = (66, 110) if KIND == "long" else (92, 520)
-    size = int(size * st["scale"])
-    bold = -1 if st["bold"] else 0
+    size = int((60 if KIND == "long" else 80) * st["scale"])
+    sec, ocol, back = st.get("sec", "&H000000FF"), st.get("ocol", BLK), st.get("back", "&H64000000")
+    bs, ow, sh = st.get("bs", 1), st.get("ow", 9), st.get("sh", 2)
     return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
 PlayResY: {H}
+WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{st['font']},{size},{st['color']},&H000000FF,&H00000000,&H64000000,{bold},0,0,0,100,100,0,0,1,9,2,2,60,60,{margin},1
+Style: Default,{st['font']},{size},{st['color']},{sec},{ocol},{back},-1,0,0,0,100,100,0,0,{bs},{ow},{sh},2,60,60,{margin_v()},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -80,53 +126,119 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 
-RULES_COMMON = """- Only state facts you are certain are true. No made-up statistics, no made-up tools, no made-up prices. Only name tools that really exist and are free. If you are not sure a tool exists, teach a general technique instead.
+# ----------------------------------------------------------------------------------------------
+# Script writing (Gemini)
+# ----------------------------------------------------------------------------------------------
+FORMATS = [
+    "a funny skit: a talking animal or object (original character) explains it to a confused friend",
+    "myth vs fact: the character reacts to a common wrong belief and corrects it",
+    "mistake and fix: show a mistake people make, a funny fail, then the right way",
+    "quick tour: the character shows three small useful points, each with a joke",
+    "talking vegetable or fruit skit: the vegetable (original character) explains it in a funny way",
+    "talking lion or other animal (original character) gives a short motivational-style explanation, with humour",
+    "reaction: the character reacts with big emotions to one simple confirmed fact, then explains it",
+]
+
+EVERGREEN_IDEAS = [
+    "a talking vegetable (original character) argues with its friends about one simple healthy habit",
+    "a talking lion (original character) coaches a nervous friend on one simple way to improve a skill, like learning faster or staying focused",
+    "how to use AI video tools in general: one beginner technique for writing a good prompt (no tool claims, no numbers)",
+    "what AI 'plugins' or 'skills' are, explained simply as a skit, with one safe habit when installing anything (no named download links)",
+    "how to use free AI tools safely: one habit that avoids a common mistake (no named tool claims)",
+    "one simple study or practice trick, shown as a funny before/after skit",
+    "one phone or gaming habit that wastes time, and the fix, as a skit with a talking animal",
+    "one simple gym habit for beginners (warm up, good form, rest days) told by a talking animal coach, no promises about results and no numbers",
+    "a motivational talk from a talking lion (original character) about showing up every day, kept short and funny",
+    "how to start learning AI as a beginner: one small practice habit, no course or tool claims, no numbers",
+    "one simple money-saving habit for beginners as a skit (no income claims, no investment advice, no numbers)",
+]
+
+EVERGREEN = ("EVERGREEN IDEA for this video (no news, no dates, no specific numbers, no named people, no release dates): {idea}")
+
+
+def read_trends():
+    """All your own lines (trends.txt) plus a random 12 of the auto-collected ones (trends_auto.txt), so every
+    video sees a different mix of topics."""
+    def lines_of(f):
+        if not f.exists():
+            return []
+        return [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    auto = lines_of(TRENDS_AUTO)
+    random.shuffle(auto)
+    return "\n".join(lines_of(TRENDS) + auto[:12])
+
+
+RULES_COMMON = """- Only state facts you are certain are true, or that appear in the TRENDS list. No made-up statistics, no made-up tools, no made-up prices, no made-up release dates. Only name tools that really exist. If you are not sure, teach a general idea instead.
 - The title may ONLY promise what the video actually explains. Never use: secret, hack, hidden, shocking, they don't want you to know, or any claim about earning money, getting paid or getting rich.
-- Narration is plain spoken English, no emojis, no stage directions.
-- The first scene must confirm what the title promises in its first sentence and open a question the viewer wants answered. Good hook shapes: name a mistake the viewer is probably making right now; state common advice and then reject it; show the end result first, then say how. Never invent a number, a result or a source."""
+- No numbers of any kind in the script (no hours, days, percentages, amounts, counts) unless the exact number is written in the TRENDS line. Say 'a day' or 'a few minutes' only as a general suggestion, never as a fact or a result (do not say things like 'urges fade in 24 hours').
+- Original characters and original script only. Never copy another creator, show or game character.
+- narration_ta is the VOICE text: casual spoken Tamil in Tamil script, short plain sentences the way friends talk, not formal book Tamil. Write English words (tool names, game names) in Tamil script as they sound (for example ChatGPT as சாட்ஜிபிடி) so the Tamil voice can pronounce them. No emojis, no stage directions, no symbols.
+- caption is the SAME sentence written in Thanglish (Tamil in English letters, how people text it). It must say the same thing as narration_ta, same order, about the same number of words. Tool and game names are spelled normally in English (ChatGPT, GTA). No emojis.
+- Scene 1 is a hook of AT MOST 10 words. It does ONE of: names a mistake the viewer makes right now; rejects common advice; shows the end result first. No greeting, no tool name yet, no 'did you know'. Never invent a number or a source.
+- Fitness, gym or health topics: general safe form and habit tips only. No medical claims, no weight-loss or muscle-gain promises, no diet plans, no numbers; beginners start light and stop if something hurts.
+- Scene 1 caption and narration must match the title's promise."""
 
 JSON_KEYS = """Return ONLY JSON with keys:
-title (max 70 chars, clear and honest, no clickbait),
-description (1-2 sentences, no income claims),
+title (max 70 chars, Thanglish with English tool or game names, clear and honest, no clickbait),
+description (1-2 sentences in Thanglish plus one plain English sentence for search, no income claims),
 hashtags (array of 5 strings, no #),
-character (ONE sentence describing a friendly cartoon main character who appears in most scenes: age, hair, clothes, e.g. "a young Indian woman with a black ponytail wearing a yellow hoodie and round glasses"),
-style (exactly one of: impact, clean, modern, friendly, serif, mono. Pick the caption look that fits the topic mood: impact for urgent tips and news, clean for tutorials, modern for AI and tech, friendly for casual beginner topics, serif for history and stories, mono for coding),
-scenes (array of {n} objects with: "narration", "search_query" (2-3 simple concrete English words describing real stock footage, e.g. "ocean waves", "city night"), "image_prompts" (array of exactly 2 picture descriptions. Each must show exactly what that scene's narration is saying: a concrete subject, an action and a setting, featuring the main character whenever a person fits. The two must be DIFFERENT moments or camera angles. Never ask for text, letters, logos or screens with readable words in the pictures))."""
+character (ONE sentence describing a friendly original cartoon main character who appears in most scenes: a person, animal or object with age/colour/clothes, e.g. "a cheeky orange cat wearing round glasses and a yellow hoodie"),
+scenes (array of {n} objects with: "narration_ta" (Tamil script voice text), "caption" (the same sentence in Thanglish), "search_queries" (array of exactly 2 DIFFERENT 2-3 word English queries for real stock footage that fits the scene, e.g. ["phone scrolling", "student laptop"]), "image_prompts" (array of exactly 2 picture descriptions in English. Each must show exactly what that scene says: a concrete subject, an action and a setting, featuring the main character whenever it fits. The two must be DIFFERENT moments or camera angles. Never ask for text, letters, logos or screens with readable words in the pictures))."""
 
 
 def build_prompt(hist):
-    recent = json.dumps(hist[-40:])
+    recent = json.dumps(hist[-40:], ensure_ascii=False)
+    trends = read_trends()
+    use_evergreen = (not trends) or random.random() < 0.3      # about 1 video in 3 is a timeless skit
+    topic_rule = (EVERGREEN.format(idea=random.choice(EVERGREEN_IDEAS)) if use_evergreen else
+                  f"TRENDS (the only news or facts you may use; pick ONE topic from this list that is not covered by the earlier titles; "
+                  f"use no detail that is not written here. If a line is only a title or headline, make a fun reaction or explainer skit "
+                  f"around that topic without adding any claims about it):\n{trends}")
+    fmt = random.choice(FORMATS)
     if KIND == "long":
-        return f"""You write honest, useful YouTube tutorial videos of 4 minutes. Theme: {NICHE}.
-Pick ONE fresh, specific topic a beginner can use today. Do NOT reuse any of these earlier titles: {recent}.
+        return f"""You write fun, useful YouTube videos of about 4 minutes for Indian viewers of all ages, spoken in Tamil. Channel: {NICHE}.
+{topic_rule}
+Do NOT reuse any of these earlier titles: {recent}.
+Format for this video: {fmt}.
 Structure (22 scenes):
-- Scene 1: the problem the viewer has, as a question. No greetings.
-- Scenes 2-3: what the tool or technique is, and who it is for.
-- Scenes 4-17: a numbered step-by-step walkthrough. One clear action per scene.
+- Scene 1: the hook (see rules).
+- Scenes 2-3: what this is and who it helps.
+- Scenes 4-17: the main part, one clear idea per scene, with jokes from the character.
 - Scenes 18-20: three common mistakes and how to avoid them.
 - Scenes 21-22: a short recap of the one thing to remember.
 Rules:
-- Exactly 22 scenes. Each narration is 26-32 words (two or three plain sentences), ONE idea per scene.
+- Exactly 22 scenes. Each narration_ta is 18-26 words, ONE idea per scene.
 {RULES_COMMON}
 {JSON_KEYS.format(n=22)}"""
-    return f"""You write honest, useful YouTube Shorts. Theme: {NICHE}.
-Pick ONE fresh, specific topic. Do NOT reuse any of these earlier titles: {recent}.
+    return f"""You write fun, useful YouTube Shorts for Indian viewers of all ages, spoken in Tamil. Channel: {NICHE}.
+{topic_rule}
+Do NOT reuse any of these earlier titles: {recent}.
+Format for this video: {fmt}.
 Rules:
-- Scene 1 is a hook that creates curiosity in under 3 seconds: a question or a clear problem the viewer has. No greetings, no "did you know".
-- Exactly 8 scenes. Each narration is 11-15 words, short plain sentences, ONE idea per scene.
-- The middle scenes must teach one clear, practical step the viewer can try today.
-- The last scene sums up the one thing to remember (or loops back to the hook).
+- Exactly 8 scenes. Each narration_ta is 8-13 words, short sentences, ONE idea per scene. Scene 1 is at most 10 words.
+- Scenes 2-6 give one clear point the viewer can use or remember, with a small joke from the character.
+- The last scene sums up the one thing to remember, or loops back to the hook.
 {RULES_COMMON}
 {JSON_KEYS.format(n=8)}"""
 
 
+def nwords(s):
+    return len(str(s).split())
+
+
 def length_ok(data):
-    """Strict check on scene count and spoken length (about 2.6 words per second)."""
+    """Strict check on scene count, spoken length (Tamil is about 2.2 words per second) and the hook length."""
     scenes = data["scenes"]
-    words = sum(len(str(sc.get("narration", "")).split()) for sc in scenes)
+    words = sum(nwords(sc.get("narration_ta", "")) for sc in scenes)
+    hook_ok = nwords(scenes[0].get("narration_ta", "")) <= 12
     if KIND == "long":
-        return 18 <= len(scenes) <= 26 and 540 <= words <= 780
-    return 7 <= len(scenes) <= 9 and 85 <= words <= 125
+        return 18 <= len(scenes) <= 26 and 380 <= words <= 700 and hook_ok
+    return 7 <= len(scenes) <= 9 and 60 <= words <= 112 and hook_ok
+
+
+def sane(data):
+    sc = data["scenes"]
+    return len(sc) >= 3 and all(s.get("narration_ta") and s.get("caption") for s in sc)
 
 
 def plan(hist):
@@ -139,11 +251,11 @@ def plan(hist):
                                          "generationConfig": {"responseMimeType": "application/json"}}, timeout=180)
             r.raise_for_status()
             data = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
-            assert len(data["scenes"]) >= 3 and all(sc.get("narration") for sc in data["scenes"])
+            assert sane(data), "scenes missing narration_ta or caption"
             if length_ok(data):
                 return data
-            best = data  # usable, but the wrong length: try again, keep it as a fallback
-            print("Script length off, retrying", attempt + 1)
+            best = data  # usable, but the wrong length or hook: try again, keep it as a fallback
+            print("Script length or hook off, retrying", attempt + 1)
             time.sleep(3)
         except Exception as e:
             print("LLM retry:", e); time.sleep(5 * (attempt + 1))
@@ -152,6 +264,9 @@ def plan(hist):
     raise SystemExit("LLM failed")
 
 
+# ----------------------------------------------------------------------------------------------
+# Real stock footage (Pexels / Pixabay)
+# ----------------------------------------------------------------------------------------------
 def pexels_clip(query, path):
     if not PEXELS or not query:
         return False
@@ -182,7 +297,15 @@ def pixabay_clip(query, path):
         return False
     words = query.split()
     tries = [query] + ([words[0]] if len(words) > 1 else [])
-    order = ["large", "medium", "small"] if KIND == "long" else ["medium", "large", "small"]
+    order = ["large", "medium"]            # never the small rendition: it looks pixelated when cropped to full screen
+
+    def fits(h):  # does this clip already have the right shape (portrait for Shorts)?
+        for k in order:
+            v = h.get("videos", {}).get(k, {})
+            if v.get("width") and v.get("height"):
+                return (v["width"] > v["height"]) if KIND == "long" else (v["height"] > v["width"])
+        return False
+
     for q in tries:
         try:
             r = requests.get("https://pixabay.com/api/videos/",
@@ -190,6 +313,7 @@ def pixabay_clip(query, path):
             r.raise_for_status()
             hits = [h for h in r.json().get("hits", []) if h["id"] not in used_pb and h.get("duration", 0) >= 3]
             random.shuffle(hits)
+            hits.sort(key=lambda h: not fits(h))          # right-shaped clips first, still random inside each group
             for h in hits[:5]:
                 v = h.get("videos", {})
                 url = next((v[k]["url"] for k in order if v.get(k, {}).get("url")), None)
@@ -204,13 +328,22 @@ def pixabay_clip(query, path):
     return False
 
 
-def video_size(path):
-    out = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                                   "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)])
-    w, h = out.decode().strip().split(",")[:2]
-    return int(w), int(h)
+def get_stock(queries, dur, scene_no):
+    """Fetch 1 clip (2 for longer scenes, so the picture changes mid-scene). Returns a list of file paths."""
+    want = 2 if dur >= 4.0 else 1
+    got = []
+    for k, q in enumerate(queries):
+        if len(got) >= want:
+            break
+        p = OUT / f"{scene_no}_stock{k}.mp4"
+        if pexels_clip(q, p) or pixabay_clip(q, p):
+            got.append(p)
+    return got
 
 
+# ----------------------------------------------------------------------------------------------
+# AI pictures (fallback)
+# ----------------------------------------------------------------------------------------------
 last_good_image = None
 
 PALETTES = [((18, 24, 58), (88, 60, 160)), ((10, 40, 60), (20, 130, 150)), ((40, 16, 50), (190, 70, 110)),
@@ -306,10 +439,14 @@ def duration(path):
     return float(out.decode().strip())
 
 
+# ----------------------------------------------------------------------------------------------
+# Voice (Edge Tamil, free)
+# ----------------------------------------------------------------------------------------------
 def clean_text(text):
-    """Remove emojis, markdown and odd symbols that can make edge-tts return no audio."""
+    """Remove emojis, markdown and odd symbols that can make edge-tts return no audio. Keeps Tamil letters AND
+    Tamil vowel signs (they are not matched by \\w, so the Tamil block is allowed explicitly)."""
     text = re.sub(r"[*_`#~<>\[\]{}|\\^=+]", " ", str(text))
-    text = re.sub(r"[^\w\s.,!?'\-:;%$&()/]", " ", text)
+    text = re.sub(r"[^\w\s.,!?'\-:;%$&()/஀-௿‌‍]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -318,14 +455,14 @@ async def tts(text, path):
     text = clean_text(text)
     if not text:
         raise SystemExit("TTS failed: empty narration")
-    # Multilingual voices do not always send word timings, so we fall back step by step.
-    configs = [(VOICE, "WordBoundary"), (VOICE, "SentenceBoundary"),
-               ("en-US-GuyNeural", "WordBoundary"), ("en-US-AriaNeural", "SentenceBoundary")]
+    other = next(v for v in TAMIL_VOICES if v != VOICE) if VOICE in TAMIL_VOICES else TAMIL_VOICES[0]
+    # Multilingual voices do not always send word timings, so we fall back step by step. Always a Tamil voice.
+    configs = [(VOICE, "WordBoundary"), (VOICE, "SentenceBoundary"), (other, "WordBoundary"), (other, "SentenceBoundary")]
     for attempt in range(6):
         voice, boundary = configs[min(attempt, len(configs) - 1)]
         try:
             words, got = [], False
-            comm = edge_tts.Communicate(text, voice, rate="+4%", boundary=boundary)
+            comm = edge_tts.Communicate(text, voice, rate=TTS_RATE, pitch=TTS_PITCH, boundary=boundary)
             with open(path, "wb") as f:
                 async for ch in comm.stream():
                     if ch["type"] == "audio":
@@ -348,42 +485,190 @@ async def tts(text, path):
     raise SystemExit("TTS failed")
 
 
+# ----------------------------------------------------------------------------------------------
+# Captions (Thanglish) with animated looks
+# ----------------------------------------------------------------------------------------------
 def ts(t):
+    t = max(0.0, t)
     return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
 
 
-def write_ass(words, narration, dur, path):
-    if not words:  # fallback: spread words evenly
-        toks = narration.split()
-        step = dur / max(len(toks), 1)
-        words = [(i * step, (i + 1) * step, t) for i, t in enumerate(toks)]
-    chunks = [words[i:i + 3] for i in range(0, len(words), 3)]
+def clean_caption(text):
+    text = re.sub(r"[{}\\]", "", str(text))
+    text = re.sub(r"[^\w\s.,!?'\-:;%$&()/₹]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def caption_timings(words, caption, dur):
+    """Thanglish words do not match the Tamil voice words one to one, so spread them across the
+    time the voice is actually speaking, weighted by word length."""
+    toks = caption.split()
+    if not toks:
+        return []
+    t0 = words[0][0] if words else 0.0
+    t1 = words[-1][1] if words else dur
+    t1 = max(t1, t0 + 0.4)
+    weights = [len(t) + 1.5 for t in toks]
+    total = sum(weights)
+    out, cur = [], t0
+    for t, w in zip(toks, weights):
+        span = (t1 - t0) * w / total
+        out.append((cur, cur + span, t))
+        cur += span
+    return out
+
+
+def D(layer, s, e, text):
+    return f"Dialogue: {layer},{ts(s)},{ts(e)},Default,,0,0,0,,{text}"
+
+
+def pos_tag():
+    return f"\\an2\\pos({W // 2},{H - margin_v()})"
+
+
+def fx_basic(ch, s, e):
+    return [D(0, s, e, POP + " ".join(w[2] for w in ch))]
+
+
+def fx_kinetic(ch, s, e):
+    rot = random.choice([-5, -3, 3, 5])
+    t = f"{{{pos_tag()}\\fscx60\\fscy60\\frz{rot}\\t(0,110,\\fscx118\\fscy118)\\t(110,210,\\fscx100\\fscy100\\frz0)\\fad(25,0)}}"
+    return [D(0, s, e, t + " ".join(w[2] for w in ch))]
+
+
+def fx_pullback(ch, s, e):
+    t = f"{{{pos_tag()}\\fscx175\\fscy175\\alpha&HFF&\\t(0,320,\\fscx100\\fscy100\\alpha&H00&)}}"
+    return [D(0, s, e, t + " ".join(w[2] for w in ch))]
+
+
+def fx_blur(ch, s, e):
+    t = f"{{{pos_tag()}\\blur14\\fscx108\\fscy108\\alpha&H80&\\t(0,280,\\blur0.6\\fscx100\\fscy100\\alpha&H00&)\\fad(0,60)}}"
+    return [D(0, s, e, t + " ".join(w[2] for w in ch))]
+
+
+def fx_slide(ch, s, e):
+    x, y = W // 2, H - margin_v()
+    t = f"{{\\an2\\move({x + 650},{y},{x},{y},0,190)\\fad(0,40)}}"
+    return [D(0, s, e, t + " ".join(w[2] for w in ch))]
+
+
+def fx_minimal(ch, s, e):
+    t = f"{{{pos_tag()}\\fad(90,60)}}"
+    return [D(0, s, e, t + " ".join(w[2] for w in ch))]
+
+
+def fx_neon(ch, s, e):
+    col = random.choice([CYN, MAG, "&H0000FF00", "&H000090FF"])
+    text = " ".join(w[2] for w in ch)
+    glow = f"{{{pos_tag()}\\1a&HFF&\\3c{col}&\\bord14\\blur16\\fad(60,0)}}"      # soft coloured halo behind the text
+    main = f"{{{pos_tag()}\\3c{col}&\\bord4\\blur1\\shad0\\fad(60,0)}}"
+    return [D(0, s, e, glow + text), D(1, s, e, main + text)]
+
+
+def fx_glitch(ch, s, e):
+    x, y = W // 2, H - margin_v()
+    text = " ".join(w[2] for w in ch)
+    red = f"{{\\an2\\move({x - 14},{y},{x - 4},{y},0,160)\\1c{RED}&\\3a&HFF&\\bord0\\shad0\\alpha&H30&}}"
+    cyan = f"{{\\an2\\move({x + 14},{y},{x + 4},{y},0,160)\\1c{CYN}&\\3a&HFF&\\bord0\\shad0\\alpha&H30&}}"
+    main = f"{{{pos_tag()}\\fad(20,0)}}"
+    return [D(0, s, e, red + text), D(1, s, e, cyan + text), D(2, s, e, main + text)]
+
+
+def fx_tech(ch, s, e):
+    t = f"{{{pos_tag()}\\1c{WHT}&\\t(0,220,\\1c{CYN}&)\\fad(40,0)}}"
+    return [D(0, s, e, t + "[ " + " ".join(w[2] for w in ch) + " ]")]
+
+
+def fx_karaoke(ch, s, e):
+    """Each word lights up (yellow) when it is spoken, inside a dark pill."""
+    parts = []
+    for i, (ws, we, wt) in enumerate(ch):
+        nxt = ch[i + 1][0] if i + 1 < len(ch) else e
+        cs = max(1, int(round((nxt - ws) * 100)))
+        lead = pos_tag() if i == 0 else ""
+        parts.append(f"{{{lead}\\k{cs}}}{wt}" + (" " if i + 1 < len(ch) else ""))
+    return [D(0, s, e, "".join(parts))]
+
+
+def fx_typewriter(ch, s, e):
+    """Words appear one by one with a terminal prompt and a cursor."""
+    out = []
+    for k in range(len(ch)):
+        ws = ch[k][0]
+        we = ch[k + 1][0] if k + 1 < len(ch) else e
+        shown = " ".join(w[2] for w in ch[:k + 1])
+        out.append(D(0, ws, we, f"{{{pos_tag()}}}> {shown}_"))
+    return out
+
+
+FX = {"basic": fx_basic, "kinetic": fx_kinetic, "pullback": fx_pullback, "blur": fx_blur, "slide": fx_slide,
+      "minimal": fx_minimal, "neon": fx_neon, "glitch": fx_glitch, "tech": fx_tech, "karaoke": fx_karaoke,
+      "typewriter": fx_typewriter}
+
+
+def write_ass(words, caption, dur, path):
+    toks = caption_timings(words, clean_caption(caption), dur)
+    if not toks:
+        toks = [(0.0, dur, "...")]
+    if CUR_STYLE["upper"]:
+        toks = [(a, b, t.upper()) for a, b, t in toks]
+    n = CUR_STYLE.get("chunk", 3 if KIND == "long" else 2)
+    chunks = [toks[i:i + n] for i in range(0, len(toks), n)]
+    fx = FX[CUR_STYLE["fx"]]
     lines = []
-    for n, ch in enumerate(chunks):
+    for k, ch in enumerate(chunks):
         start = ch[0][0]
-        end = chunks[n + 1][0][0] if n + 1 < len(chunks) else ch[-1][1] + 0.3
-        text = " ".join(w[2] for w in ch).replace("{", "").replace("}", "")
-        if CUR_STYLE["upper"]:
-            text = text.upper()
-        text = POP + text
-        lines.append(f"Dialogue: 0,{ts(start)},{ts(end)},Default,,0,0,0,,{text}")
+        end = chunks[k + 1][0][0] if k + 1 < len(chunks) else ch[-1][1] + 0.3
+        lines += fx(ch, start, max(end, start + 0.2))
     path.write_text(ass_header() + "\n".join(lines) + "\n", encoding="utf-8")
 
 
-def render_stock(vid, aud, dur, sub, clip):
-    """Stock clip fills the frame; if its shape does not match, it sits sharp over a blurred copy of itself."""
-    w, h = video_size(vid)
-    fit = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
-    if abs(w / h - W / H) < 0.3:
-        fc = f"[0:v]{fit},fps=30,{sub},format=yuv420p[vout]"
-    else:
-        fc = (f"[0:v]split[a][b];[a]{fit},boxblur=30:5[bg];"
-              f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
-              f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,{sub},format=yuv420p[vout]")
-    run(["ffmpeg", "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", str(vid), "-i", str(aud),
-         "-filter_complex", fc, "-map", "[vout]", "-map", "1:a", "-t", f"{dur + 0.2:.2f}", "-r", "30",
-         "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
-         "-shortest", str(clip)])
+# ----------------------------------------------------------------------------------------------
+# Video building
+# ----------------------------------------------------------------------------------------------
+def video_size(path):
+    out = subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                                   "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)])
+    w, h = out.decode().strip().split(",")[:2]
+    return int(w), int(h)
+
+
+def with_transition(build):
+    """Try a random transition; if this ffmpeg does not know it, fall back to a plain fade."""
+    tr = random.choice(TRANSITIONS)
+    try:
+        build(tr)
+    except subprocess.CalledProcessError:
+        if tr == "fade":
+            raise
+        print("transition", tr, "failed, using fade")
+        build("fade")
+
+
+def build_stock(vids, total, aud, sub, clip):
+    """Real moving clips fill the whole frame (centre crop, no blurred bars). Two clips are joined by a random transition."""
+    n, fade = len(vids), 0.35
+    if n == 1:
+        fade = 0
+
+    def build(tr):
+        d = (total + (n - 1) * fade) / n
+        inp, parts = [], []
+        for k, v in enumerate(vids):
+            inp += ["-stream_loop", "-1", "-t", f"{d + 0.6:.2f}", "-i", str(v)]
+            parts.append(f"[{k}:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                         f"fps=30,setsar=1,format=yuv420p,trim=duration={d:.3f},setpts=PTS-STARTPTS[v{k}]")
+        last = "v0"
+        for k in range(1, n):
+            off = k * (d - fade)
+            parts.append(f"[{last}][v{k}]xfade=transition={tr}:duration={fade}:offset={off:.3f}[x{k}]")
+            last = f"x{k}"
+        parts.append(f"[{last}]{sub},format=yuv420p[vout]")
+        run(["ffmpeg", "-y", "-loglevel", "error", *inp, "-i", str(aud),
+             "-filter_complex", ";".join(parts), "-map", "[vout]", "-map", f"{n}:a", "-t", f"{total:.2f}", "-r", "30",
+             "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+             "-shortest", str(clip)])
+    with_transition(build) if n > 1 else build("fade")
 
 
 def gradient_video(seed_text, dur, aud, sub, clip):
@@ -401,12 +686,22 @@ def gradient_video(seed_text, dur, aud, sub, clip):
 
 
 def render_clip(i, sc, dur, ass):
-    vid, aud, clip = OUT / f"{i}_src.mp4", OUT / f"{i}.mp3", OUT / f"{i}.mp4"
+    aud, clip = OUT / f"{i}.mp3", OUT / f"{i}.mp4"
     sub = f"subtitles={ass.as_posix()}"
     prompts = sc.get("image_prompts") or ([sc["image_prompt"]] if sc.get("image_prompt") else [])
-    prompts = [p for p in prompts if p][:3] or [sc.get("narration", "abstract background")]
-    # 1) AI pictures that match what the scene says, each with its own camera move, joined by crossfades.
-    if ai_images_available():
+    prompts = [p for p in prompts if p][:3] or [sc.get("narration_ta", "abstract background")]
+    qs = [q for q in (sc.get("search_queries") or []) if q] or ([sc["search_query"]] if sc.get("search_query") else [])
+
+    def stock():
+        vids = get_stock(qs, dur, i) if qs else []
+        if vids:
+            build_stock(vids, dur + 0.2, aud, sub, clip)
+            return True
+        return False
+
+    def ai():
+        if not ai_images_available():
+            return False
         imgs = []
         for k, p in enumerate(prompts):
             if k > 0 and not ai_images_available():
@@ -417,13 +712,17 @@ def render_clip(i, sc, dur, ass):
                 time.sleep(1)
         if imgs:
             build_shots(imgs, dur + 0.2, aud, sub, clip, i)
-            return clip
-    # 2) Free stock footage, if a Pexels or Pixabay key is set.
-    q = sc.get("search_query", "")
-    if pexels_clip(q, vid) or pixabay_clip(q, vid):
-        render_stock(vid, aud, dur, sub, clip)
-        return clip
-    # 3) Last resort: a moving colour gradient.
+            return True
+        return False
+
+    order = [ai, stock] if VISUALS == "ai" else [stock, ai]
+    for step in order:
+        try:
+            if step():
+                return clip
+        except Exception as e:
+            print(f"{step.__name__} failed for scene {i}:", e)
+    # Last resort: a moving colour gradient.
     try:
         gradient_video(prompts[0], dur, aud, sub, clip)
     except Exception as e:
@@ -452,55 +751,67 @@ def build_shots(imgs, total, aud, sub, clip, scene_no):
     n, fade = len(imgs), 0.4
     if n == 1:
         fade = 0
-    d = (total + (n - 1) * fade) / n          # length of each shot, so the joined total equals `total`
-    frames = int(d * 30) + 2
-    start = scene_no % len(MOVES)              # vary the first move from scene to scene
-    inp, parts = [], []
-    for k, ip in enumerate(imgs):
-        inp += ["-loop", "1", "-t", f"{d + 0.5:.2f}", "-i", str(ip)]
-        mv = MOVES[(start + k) % len(MOVES)]
-        parts.append(f"[{k}:v]scale={int(W * 1.5)}:{int(H * 1.5)}:force_original_aspect_ratio=increase,"
-                     f"crop={int(W * 1.5)}:{int(H * 1.5)},"
-                     f"zoompan={zoom_expr(mv, frames)}:d={frames}:s={W}x{H}:fps=30,"
-                     f"setsar=1,format=yuv420p,trim=duration={d:.3f},setpts=PTS-STARTPTS[v{k}]")
-    last = "v0"
-    for k in range(1, n):
-        off = k * (d - fade)
-        parts.append(f"[{last}][v{k}]xfade=transition=fade:duration={fade}:offset={off:.3f}[x{k}]")
-        last = f"x{k}"
-    parts.append(f"[{last}]{sub},format=yuv420p[vout]")
-    run(["ffmpeg", "-y", "-loglevel", "error", *inp, "-i", str(aud),
-         "-filter_complex", ";".join(parts),
-         "-map", "[vout]", "-map", f"{n}:a", "-t", f"{total:.2f}", "-r", "30",
-         "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
-         "-shortest", str(clip)])
+
+    def build(tr):
+        d = (total + (n - 1) * fade) / n          # length of each shot, so the joined total equals `total`
+        frames = int(d * 30) + 2
+        start = scene_no % len(MOVES)              # vary the first move from scene to scene
+        inp, parts = [], []
+        for k, ip in enumerate(imgs):
+            inp += ["-loop", "1", "-t", f"{d + 0.5:.2f}", "-i", str(ip)]
+            mv = MOVES[(start + k) % len(MOVES)]
+            parts.append(f"[{k}:v]scale={int(W * 1.5)}:{int(H * 1.5)}:force_original_aspect_ratio=increase,"
+                         f"crop={int(W * 1.5)}:{int(H * 1.5)},"
+                         f"zoompan={zoom_expr(mv, frames)}:d={frames}:s={W}x{H}:fps=30,"
+                         f"setsar=1,format=yuv420p,trim=duration={d:.3f},setpts=PTS-STARTPTS[v{k}]")
+        last = "v0"
+        for k in range(1, n):
+            off = k * (d - fade)
+            parts.append(f"[{last}][v{k}]xfade=transition={tr}:duration={fade}:offset={off:.3f}[x{k}]")
+            last = f"x{k}"
+        parts.append(f"[{last}]{sub},format=yuv420p[vout]")
+        run(["ffmpeg", "-y", "-loglevel", "error", *inp, "-i", str(aud),
+             "-filter_complex", ";".join(parts),
+             "-map", "[vout]", "-map", f"{n}:a", "-t", f"{total:.2f}", "-r", "30",
+             "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+             "-shortest", str(clip)])
+    with_transition(build) if n > 1 else build("fade")
 
 
 def add_music(video, final):
     tracks = list(MUSIC_DIR.glob("*.mp3")) if MUSIC_DIR.exists() else []
     if not tracks:
-        video.replace(final); return
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+             "-c:v", "copy", "-c:a", "aac", "-ar", "44100", str(final)])
+        return
     run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-stream_loop", "-1", "-i", str(random.choice(tracks)),
-         "-filter_complex", "[1:a]volume=0.10[m];[0:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]",
+         "-filter_complex", "[1:a]volume=0.10[m];[0:a][m]amix=inputs=2:duration=first:dropout_transition=0,loudnorm=I=-14:TP=-1.5:LRA=11[a]",
          "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-shortest", str(final)])
 
 
 def main():
-    global CUR_STYLE, CHARACTER
-    print(f"generate.py v6 | cloudflare token length {len(CF_TOKEN)} (normally 40), account id length {len(CF_ACCOUNT)} (normally 32)")
+    global CUR_STYLE, CUR_NAME, CHARACTER
+    print(f"generate.py v7 (Tamil) | voice {VOICE} rate {TTS_RATE} pitch {TTS_PITCH} | visuals {VISUALS or 'stock'} | "
+          f"pexels {'yes' if PEXELS else 'no'} pixabay {'yes' if PIXABAY else 'no'} | trends {'yes' if read_trends() else 'no'}")
     hist = json.loads(HIST.read_text()) if HIST.exists() else []
     data = plan(hist)
-    CUR_STYLE = STYLES.get(str(data.get("style", "")).strip().lower(), STYLES["clean"])
+    forced = os.environ.get("CAPTION_STYLE", "").strip().lower()
+    CUR_NAME = forced if forced in STYLES else random.choice(list(STYLES))
+    CUR_STYLE = STYLES[CUR_NAME]
     CHARACTER = str(data.get("character", "")).strip()[:300]
-    print("caption style:", CUR_STYLE["font"], "| character:", CHARACTER)
+    print("caption style:", CUR_NAME, "| character:", CHARACTER)
     clips = []
     total = 0.0
+    script_lines = [data["title"], ""]
     for i, sc in enumerate(data["scenes"]):
         aud, ass = OUT / f"{i}.mp3", OUT / f"{i}.ass"
-        words = asyncio.run(tts(sc["narration"], aud))
+        voice_text = sc.get("narration_ta") or sc.get("narration", "")
+        caption = sc.get("caption") or voice_text
+        words = asyncio.run(tts(voice_text, aud))
         dur = duration(aud)
-        write_ass(words, sc["narration"], dur, ass)
+        write_ass(words, caption, dur, ass)
         total += dur
+        script_lines += [f"Scene {i + 1}", f"  Tamil:    {voice_text}", f"  Thanglish: {caption}"]
         clips.append(render_clip(i, sc, dur, ass))
     lst = OUT / "list.txt"
     lst.write_text("".join(f"file '{c.name}'\n" for c in clips))
@@ -513,9 +824,13 @@ def main():
     meta = {"title": data["title"][:95], "description": f"{data['description']}\n\n{tags}{shorts_tag}",
             "caption": f"{data['title']}\n\n{data['description']}\n\n{tags}",
             "tags": data.get("hashtags", [])}
-    (OUT / "meta.json").write_text(json.dumps(meta))
-    HIST.write_text(json.dumps((hist + [data["title"]])[-100:]))
+    (OUT / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    script_text = "\n".join(script_lines) + f"\n\ncaption style: {CUR_NAME}\n"
+    (OUT / "script.txt").write_text(script_text, encoding="utf-8")
+    print("----- SCRIPT -----\n" + script_text + "------------------")
+    HIST.write_text(json.dumps((hist + [data["title"]])[-100:], ensure_ascii=False), encoding="utf-8")
     print(f"Done ({KIND}, {total:.0f}s):", meta["title"])
 
 
-main()
+if __name__ == "__main__":
+    main()
