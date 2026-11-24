@@ -8,6 +8,7 @@ W, H = (1920, 1080) if KIND == "long" else (1080, 1920)
 OUT = pathlib.Path("out"); OUT.mkdir(exist_ok=True)
 HIST = pathlib.Path("history.json")
 TRENDS = pathlib.Path("trends.txt")
+TRENDS_AUTO = pathlib.Path("trends_auto.txt")
 MUSIC_DIR = pathlib.Path("music")
 DEFAULT_NICHE = ("Fun, useful trending content for Indian viewers in Tamil, with Thanglish captions: "
                  "AI tools explained as short skits, game facts and tech news. Original characters and scripts only.")
@@ -142,9 +143,11 @@ EVERGREEN = ("No trends list was given today. Make an original skit teaching ONE
 
 
 def read_trends():
-    if not TRENDS.exists():
-        return ""
-    lines = [ln.strip() for ln in TRENDS.read_text(encoding="utf-8").splitlines()]
+    """Your own lines (trends.txt) first, then the weekly auto-collected headlines (trends_auto.txt)."""
+    lines = []
+    for f in (TRENDS, TRENDS_AUTO):
+        if f.exists():
+            lines += [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()]
     return "\n".join(ln for ln in lines if ln and not ln.startswith("#"))
 
 
