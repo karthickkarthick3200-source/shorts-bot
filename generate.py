@@ -32,7 +32,7 @@ TTS_PITCH = os.environ.get("TTS_PITCH", "").strip() or "+0Hz"    # e.g. "+4Hz" o
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 # Tried in order when the main model is overloaded (503/429/timeouts). Override with GEMINI_FALLBACKS="a,b".
-FALLBACK_MODELS = [m.strip() for m in os.environ.get("GEMINI_FALLBACKS", "gemini-2.5-flash,gemini-2.5-flash-lite").split(",") if m.strip()]
+FALLBACK_MODELS = [m.strip() for m in os.environ.get("GEMINI_FALLBACKS", "gemini-3.5-flash-lite,gemini-3.6-flash,gemini-3.1-flash-lite").split(",") if m.strip()]
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY = os.environ.get("PIXABAY_API_KEY", "")
 # VISUALS=stock (default): real moving stock clips first, then AI pictures, then gradient.
