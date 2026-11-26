@@ -31,6 +31,8 @@ TTS_RATE = os.environ.get("TTS_RATE", "").strip() or ("+0%" if TA else "+4%")   
 TTS_PITCH = os.environ.get("TTS_PITCH", "").strip() or "+0Hz"    # e.g. "+4Hz" or "-3Hz"
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+# Tried in order when the main model is overloaded (503/429/timeouts). Override with GEMINI_FALLBACKS="a,b".
+FALLBACK_MODELS = [m.strip() for m in os.environ.get("GEMINI_FALLBACKS", "gemini-2.5-flash,gemini-2.5-flash-lite").split(",") if m.strip()]
 PEXELS = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY = os.environ.get("PIXABAY_API_KEY", "")
 # VISUALS=stock (default): real moving stock clips first, then AI pictures, then gradient.
@@ -277,25 +279,34 @@ def sane(data):
 
 def plan(hist):
     prompt = build_prompt(hist)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={os.environ['GEMINI_API_KEY']}"
+    key = os.environ["GEMINI_API_KEY"]
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"}}
     best = None
-    for attempt in range(5):
-        try:
-            r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}],
-                                         "generationConfig": {"responseMimeType": "application/json"}}, timeout=180)
-            r.raise_for_status()
-            data = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
-            assert sane(data), "scenes missing narration_ta or caption"
-            if length_ok(data):
-                return data
-            best = data  # usable, but the wrong length or hook: try again, keep it as a fallback
-            print("Script length or hook off, retrying", attempt + 1)
-            time.sleep(3)
-        except Exception as e:
-            print("LLM retry:", e); time.sleep(5 * (attempt + 1))
-    if best:
-        return best
-    raise SystemExit("LLM failed")
+    for model in [MODEL] + [m for m in FALLBACK_MODELS if m != MODEL]:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        for attempt in range(4):
+            try:
+                r = requests.post(url, json=body, timeout=60)
+                if r.status_code in (429, 500, 502, 503, 504):
+                    raise RuntimeError(f"HTTP {r.status_code} from {model}")
+                r.raise_for_status()
+                data = json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+                assert sane(data), "scenes missing narration_ta or caption"
+                if length_ok(data):
+                    print(f"Script written by {model}")
+                    return data
+                best = data  # usable, but wrong length or hook: try again, keep as fallback
+                print("Script length or hook off, retrying", attempt + 1)
+                time.sleep(3)
+            except Exception as e:
+                wait = 5 * (2 ** attempt) + random.uniform(0, 3)  # ~5s, 10s, 20s, 40s
+                print(f"LLM retry ({model}, attempt {attempt + 1}): {e}; waiting {wait:.0f}s")
+                time.sleep(wait)
+        if best:
+            return best
+        print(f"{model} gave no usable script, trying next model")
+    raise SystemExit("LLM failed on all models")
 
 
 # ----------------------------------------------------------------------------------------------
